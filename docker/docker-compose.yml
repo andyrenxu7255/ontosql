@@ -1,0 +1,54 @@
+# ============================================================================
+# OntoSQL Docker Compose 编排文件
+# ============================================================================
+# 启动：docker compose up -d
+# 环境变量：
+#   PG_PORT             监听端口（默认 5432）
+#   POSTGRES_PASSWORD   postgres 用户密码（默认 ontosql）
+# ============================================================================
+
+services:
+  ontosql:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ontosql:latest
+    container_name: ontosql
+
+    # 端口映射：可通过 PG_PORT 环境变量自定义暴露端口
+    ports:
+      - "${PG_PORT:-5432}:5432"
+
+    # 数据库密码：通过环境变量传入，entrypoint.sh 读取设置
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ontosql}
+
+    # 数据持久化：将 PG 数据目录挂载到命名卷
+    # SQL Schema 只读挂载，方便手动初始化
+    volumes:
+      - pgdata:/var/lib/pgsql/data
+      - ../sql:/sql:ro
+
+    # 健康检查：使用 pg_isready 检测数据库就绪状态
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+    # 自动重启：容器异常退出时自动恢复
+    restart: unless-stopped
+
+    # 资源限制：防止内存泄漏或异常消耗影响宿主机
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+    # 安全加固：禁止容器内进程提升权限
+    security_opt:
+      - no-new-privileges:true
+
+# 命名数据卷：保证数据在容器重建后仍然保留
+volumes:
+  pgdata:
