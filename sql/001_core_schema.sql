@@ -17,7 +17,24 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 SET search_path TO :ONTOSQL_SCHEMA, ag_catalog, public;
 
 -- ============================================================================
--- 2. 向量注册表 — 管理所有向量侧表的元数据
+-- 2. Schema 版本管理表
+-- ============================================================================
+-- 用途：追踪 Schema 变更历史，支持版本升级和回滚
+-- 查询：SELECT * FROM schema_version ORDER BY installed_at DESC;
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    version         text PRIMARY KEY,                      -- 版本号（如 '1.0.0'）
+    description     text,                                  -- 版本变更说明
+    installed_by    text DEFAULT current_user,             -- 执行者
+    installed_at    timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO schema_version (version, description)
+VALUES ('1.0.0', 'Initial schema with vector embeddings, multi-path recall functions, and write interfaces')
+ON CONFLICT (version) DO NOTHING;
+
+-- ============================================================================
+-- 3. 向量注册表 — 管理所有向量侧表的元数据
 -- ============================================================================
 -- 用途：统一管理项目中的向量侧表，支持动态注册新表
 -- 查询：SELECT * FROM vector_registry WHERE entity_type = 'vertex';
@@ -39,7 +56,7 @@ CREATE TABLE IF NOT EXISTS vector_registry (
 );
 
 -- ============================================================================
--- 3. 对象向量侧表 — 存储图中顶点的 embedding
+-- 4. 对象向量侧表 — 存储图中顶点的 embedding
 -- ============================================================================
 -- 用途：为 AGE 图中的每个业务对象存储向量表示，支持语义相似度搜索
 -- 关联：通过 (graph_name, vertex_id) 与 AGE 图中的顶点一一对应
@@ -72,7 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_vertex_embeddings_label
     ON vertex_embeddings (graph_name, label_name);
 
 -- ============================================================================
--- 4. 属性向量侧表 — 存储属性元数据的 embedding
+-- 5. 属性向量侧表 — 存储属性元数据的 embedding
 -- ============================================================================
 -- 用途：为指标/维度等属性存储向量表示，支持语义属性识别
 -- 特点：属性可独立建模为 AGE 图顶点（attr_vertex_id），也可仅在此表存在
@@ -100,7 +117,7 @@ CREATE INDEX IF NOT EXISTS idx_attribute_embeddings_name_trgm
     ON attribute_embeddings USING gin (attr_name gin_trgm_ops);
 
 -- ============================================================================
--- 5. 对象-属性关联表 — 记录对象拥有的属性
+-- 6. 对象-属性关联表 — 记录对象拥有的属性
 -- ============================================================================
 -- 用途：物化对象与属性的关联关系，加速反查（find_objects_by_attribute）和关联验证（is_verified）
 -- 来源：可从 AGE 图中自动派生（MATCH (obj)-[:HAS_METRIC]->(metric)），也可手动维护
@@ -123,10 +140,10 @@ CREATE INDEX IF NOT EXISTS idx_oam_object
     ON object_attribute_mapping (graph_name, object_vertex_id);
 -- 按属性反查拥有该属性的全部对象
 CREATE INDEX IF NOT EXISTS idx_oam_attr
-    ON object_attribute_mapping (attr_id);
+    ON object_attribute_mapping (graph_name, attr_id);
 
 -- ============================================================================
--- 6. 注册初始化记录
+-- 7. 注册初始化记录
 -- ============================================================================
 
 INSERT INTO vector_registry (table_name, graph_name, entity_type, label_or_type, vector_column, vector_dim, index_type, distance_ops)
@@ -136,11 +153,56 @@ VALUES
 ON CONFLICT (table_name) DO NOTHING;
 
 -- ============================================================================
--- 7. 核心检索函数
+-- 8. 核心检索函数
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- 7.1 search_objects — 对象识别（多路召回：向量 + trigram）
+-- 安全校验辅助函数
+-- ----------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION validate_query_text(query_text text, max_length int DEFAULT 1000)
+RETURNS void LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+BEGIN
+    IF query_text IS NULL THEN
+        RAISE EXCEPTION 'query_text must not be NULL';
+    END IF;
+    IF length(query_text) > max_length THEN
+        RAISE EXCEPTION 'query_text length (%) exceeds maximum allowed length (%)',
+            length(query_text), max_length;
+    END IF;
+    IF query_text ~ E'[\x00-\x08\x0B\x0C\x0E-\x1F]' THEN
+        RAISE EXCEPTION 'query_text contains invalid control characters';
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION validate_graph_name(graph_name text)
+RETURNS void LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+BEGIN
+    IF graph_name IS NULL THEN
+        RAISE EXCEPTION 'graph_name must not be NULL';
+    END IF;
+    IF graph_name !~ '^[a-zA-Z_][a-zA-Z0-9_]*$' THEN
+        RAISE EXCEPTION 'graph_name "%" contains invalid characters. Must match: ^[a-zA-Z_][a-zA-Z0-9_]*$',
+            graph_name;
+    END IF;
+    IF length(graph_name) > 63 THEN
+        RAISE EXCEPTION 'graph_name length (%) exceeds maximum identifier length (63)', length(graph_name);
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION validate_top_k(p_top_k int)
+RETURNS void LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+BEGIN
+    IF p_top_k IS NULL OR p_top_k < 1 OR p_top_k > 1000 THEN
+        RAISE EXCEPTION 'p_top_k must be between 1 and 1000, got %', p_top_k;
+    END IF;
+END;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- 8.1 search_objects — 对象识别（多路召回：向量 + trigram）
 -- ----------------------------------------------------------------------------
 -- 功能：输入 NL 查询文本，返回匹配的图对象及其相似度分数
 -- 算法：
@@ -151,6 +213,9 @@ ON CONFLICT (table_name) DO NOTHING;
 --   - p_query_embedding 为 NULL 时，仅使用 trigram 召回
 --   - 查询文本为空时，trigram 召回不生效，返回空结果
 --   - 扩容因子 p_top_k × 3 保证合并后有足够候选
+--   - **trigram 召回依赖 pg_trgm.similarity_threshold 参数（默认 0.3），
+--     若调整过该参数会影响召回结果数量和排序，请注意调优后验证**
+--   - query_text 最大长度 1000 字符，graph_name 仅允许字母数字下划线
 -- ----------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION search_objects(
@@ -166,8 +231,14 @@ CREATE OR REPLACE FUNCTION search_objects(
     vector_score    float,       -- 向量余弦相似度 [0, 1]
     trigram_score   float,       -- trigram 文本相似度 [0, 1]
     combined_score  float        -- 综合加权分数 [0, 1]
-) LANGUAGE sql STABLE PARALLEL SAFE AS $$
-    WITH vec_scores AS (
+) LANGUAGE plpgsql STABLE PARALLEL SAFE AS $$
+BEGIN
+    PERFORM validate_query_text(query_text);
+    PERFORM validate_graph_name(p_graph_name);
+    PERFORM validate_top_k(p_top_k);
+
+    RETURN QUERY
+    WITH vec_scores AS MATERIALIZED (
         SELECT ve.vertex_id, ve.vertex_name, ve.label_name,
                1 - (ve.embedding <=> p_query_embedding) AS score  -- <=> 是余弦距离运算符
         FROM vertex_embeddings ve
@@ -177,7 +248,7 @@ CREATE OR REPLACE FUNCTION search_objects(
         ORDER BY ve.embedding <=> p_query_embedding
         LIMIT p_top_k * 3    -- 扩大候选集，为合并去重留余量
     ),
-    trigram_scores AS (
+    trigram_scores AS MATERIALIZED (
         SELECT ve.vertex_id, ve.vertex_name, ve.label_name,
                similarity(ve.vertex_name, query_text) AS score   -- pg_trgm 文本相似度
         FROM vertex_embeddings ve
@@ -197,18 +268,19 @@ CREATE OR REPLACE FUNCTION search_objects(
                CASE WHEN p_query_embedding IS NULL THEN score ELSE score * 0.4 END AS combined_score
         FROM trigram_scores
     )
-    SELECT vertex_id, vertex_name, label_name,
-           MAX(vector_score) AS vector_score,        -- 同一对象取最高向量分
-           MAX(trigram_score) AS trigram_score,      -- 同一对象取最高 trigram 分
-           MAX(combined_score) AS combined_score     -- 同一对象取最高综合分
+    SELECT merged.vertex_id, merged.vertex_name, merged.label_name,
+           MAX(merged.vector_score) AS vector_score,        -- 同一对象取最高向量分
+           MAX(merged.trigram_score) AS trigram_score,      -- 同一对象取最高 trigram 分
+           MAX(merged.combined_score) AS combined_score     -- 同一对象取最高综合分
     FROM merged
-    GROUP BY vertex_id, vertex_name, label_name
+    GROUP BY merged.vertex_id, merged.vertex_name, merged.label_name
     ORDER BY combined_score DESC
     LIMIT p_top_k;
+END;
 $$;
 
 -- ----------------------------------------------------------------------------
--- 7.2 search_attributes — 属性识别（多路召回：向量 + trigram）
+-- 8.2 search_attributes — 属性识别（多路召回：向量 + trigram）
 -- ----------------------------------------------------------------------------
 -- 功能：输入 NL 查询文本，返回匹配的属性及其相似度
 -- 算法：与 search_objects 相同，对 attribute_embeddings 做向量 + trigram 双路召回
@@ -227,8 +299,14 @@ CREATE OR REPLACE FUNCTION search_attributes(
     vector_score    float,       -- 向量余弦相似度
     trigram_score   float,       -- trigram 文本相似度
     combined_score  float        -- 综合加权分数
-) LANGUAGE sql STABLE PARALLEL SAFE AS $$
-    WITH vec_scores AS (
+) LANGUAGE plpgsql STABLE PARALLEL SAFE AS $$
+BEGIN
+    PERFORM validate_query_text(query_text);
+    PERFORM validate_graph_name(p_graph_name);
+    PERFORM validate_top_k(p_top_k);
+
+    RETURN QUERY
+    WITH vec_scores AS MATERIALIZED (
         SELECT ae.attr_name, ae.id AS attr_id, ae.description,
                1 - (ae.embedding <=> p_query_embedding) AS score
         FROM attribute_embeddings ae
@@ -237,14 +315,36 @@ CREATE OR REPLACE FUNCTION search_attributes(
         ORDER BY ae.embedding <=> p_query_embedding
         LIMIT p_top_k * 3
     ),
-    trigram_scores AS (
+    alias_matches AS MATERIALIZED (
         SELECT ae.attr_name, ae.id AS attr_id, ae.description,
-               similarity(ae.attr_name, query_text) AS score
+               unnest(ae.aliases) AS alias
         FROM attribute_embeddings ae
         WHERE ae.graph_name = p_graph_name
-          AND ae.attr_name % query_text
+          AND ae.aliases IS NOT NULL
+          AND array_length(ae.aliases, 1) > 0
+    ),
+    trigram_scores AS MATERIALIZED (
+        SELECT ae.attr_name, ae.id AS attr_id, ae.description,
+               GREATEST(
+                   similarity(ae.attr_name, query_text),
+                   COALESCE(
+                       (SELECT MAX(similarity(am.alias, query_text))
+                        FROM alias_matches am
+                        WHERE am.attr_id = ae.id AND am.alias % query_text),
+                       0
+                   )
+               ) AS score
+        FROM attribute_embeddings ae
+        WHERE ae.graph_name = p_graph_name
           AND length(query_text) > 0
-        ORDER BY similarity(ae.attr_name, query_text) DESC
+          AND (
+              ae.attr_name % query_text
+              OR EXISTS (
+                  SELECT 1 FROM alias_matches am2
+                  WHERE am2.attr_id = ae.id AND am2.alias % query_text
+              )
+          )
+        ORDER BY score DESC
         LIMIT p_top_k * 3
     ),
     merged AS (
@@ -256,18 +356,19 @@ CREATE OR REPLACE FUNCTION search_attributes(
                CASE WHEN p_query_embedding IS NULL THEN score ELSE score * 0.4 END AS combined_score
         FROM trigram_scores
     )
-    SELECT attr_name, attr_id, description,
-           MAX(vector_score) AS vector_score,
-           MAX(trigram_score) AS trigram_score,
-           MAX(combined_score) AS combined_score
+    SELECT merged.attr_name, merged.attr_id, merged.description,
+           MAX(merged.vector_score) AS vector_score,
+           MAX(merged.trigram_score) AS trigram_score,
+           MAX(merged.combined_score) AS combined_score
     FROM merged
-    GROUP BY attr_name, attr_id, description
+    GROUP BY merged.attr_name, merged.attr_id, merged.description
     ORDER BY combined_score DESC
     LIMIT p_top_k;
+END;
 $$;
 
 -- ----------------------------------------------------------------------------
--- 7.3 find_objects_by_attribute — 属性反查对象
+-- 8.3 find_objects_by_attribute — 属性反查对象
 -- ----------------------------------------------------------------------------
 -- 功能：已知属性的 attr_id，查出所有拥有该属性的业务对象
 -- 算法：从 object_attribute_mapping 物化表查询，LEFT JOIN vertex_embeddings 补全名称
@@ -284,7 +385,12 @@ CREATE OR REPLACE FUNCTION find_objects_by_attribute(
     object_name      text,       -- 对象名称
     object_label     text,       -- 对象标签类型
     relation_type    text        -- 关联关系类型（HAS_ATTRIBUTE 等）
-) LANGUAGE sql STABLE PARALLEL SAFE AS $$
+) LANGUAGE plpgsql STABLE PARALLEL SAFE AS $$
+BEGIN
+    PERFORM validate_graph_name(p_graph_name);
+    PERFORM validate_top_k(p_top_k);
+
+    RETURN QUERY
     SELECT oam.object_vertex_id,
            COALESCE(ve.vertex_name, 'unknown')::text AS object_name,
            COALESCE(ve.label_name, oam.object_label)::text AS object_label,
@@ -297,10 +403,11 @@ CREATE OR REPLACE FUNCTION find_objects_by_attribute(
       AND oam.attr_id = p_attr_id
     ORDER BY ve.vertex_name
     LIMIT p_top_k;
+END;
 $$;
 
 -- ----------------------------------------------------------------------------
--- 7.4 search_object_attribute — 联合检索（核心接口）
+-- 8.4 search_object_attribute — 联合检索（核心接口）
 -- ----------------------------------------------------------------------------
 -- 功能：一次调用同时识别 NL 查询中的对象和属性，并验证它们之间是否存在关联（is_verified）
 -- 算法：
@@ -311,6 +418,7 @@ $$;
 --   5. 综合分 = 0.5×对象分 + 0.5×属性分
 -- 优势：一次 SQL 调用完成对象识别 + 属性识别 + 关联验证，减少网络往返
 -- 注意：CROSS JOIN 可能产生 O(obj_count × attr_count) 候选对，需要合理控制 p_top_k
+--       p_top_k 建议不超过 50（超过此值时内部自动截断扩容因子避免笛卡尔积爆炸）
 -- ----------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION search_object_attribute(
@@ -328,12 +436,18 @@ CREATE OR REPLACE FUNCTION search_object_attribute(
     attr_score       float,      -- 属性匹配分（search_attributes 的综合分）
     combined_score   float,      -- 联合综合分 [0, 1]
     is_verified      boolean     -- 图结构是否确认此对象-属性关联（true = 可靠，false = 需排除）
-) LANGUAGE sql STABLE PARALLEL SAFE AS $$
-    WITH objs AS (
-        SELECT * FROM search_objects(query_text, p_graph_name, NULL, p_top_k * 2, p_query_embedding)
+) LANGUAGE plpgsql STABLE PARALLEL SAFE AS $$
+BEGIN
+    PERFORM validate_query_text(query_text);
+    PERFORM validate_graph_name(p_graph_name);
+    PERFORM validate_top_k(p_top_k);
+
+    RETURN QUERY
+    WITH objs AS MATERIALIZED (
+        SELECT * FROM search_objects(query_text, p_graph_name, NULL, LEAST(p_top_k * 2, 50), p_query_embedding)
     ),
-    attrs AS (
-        SELECT * FROM search_attributes(query_text, p_graph_name, p_top_k * 2, p_query_embedding)
+    attrs AS MATERIALIZED (
+        SELECT * FROM search_attributes(query_text, p_graph_name, LEAST(p_top_k * 2, 50), p_query_embedding)
     )
     SELECT
         o.vertex_id, o.vertex_name, o.label_name,
@@ -351,14 +465,109 @@ CREATE OR REPLACE FUNCTION search_object_attribute(
     CROSS JOIN attrs a                       -- 笛卡尔积生成所有候选对
     ORDER BY combined_score DESC
     LIMIT p_top_k;
+END;
 $$;
 
+-- ----------------------------------------------------------------------------
+-- 8.5 get_object_attributes — 列出对象的所有属性字段
+-- ----------------------------------------------------------------------------
+-- 功能：给定一个对象的 vertex_id，返回该对象拥有的所有属性（名称、数据类型、描述）
+-- 数据来源：object_attribute_mapping 物化表 JOIN attribute_embeddings
+-- 用途：Step 2 — Agent 拿到检索到的对象后，调用此函数获取该对象可查询的全部属性字段
+-- 注意：按 confidence 降序排列，高置信度关联优先
+-- ----------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION get_object_attributes(
+    p_object_vertex_id  bigint,                  -- 对象顶点 ID（来自 search_objects 结果）
+    p_graph_name        text DEFAULT 'default'   -- 目标图名（与其他检索函数默认值保持一致）
+) RETURNS TABLE(
+    attr_id         int,         -- 属性 ID
+    attr_name       text,        -- 属性名称（如 "销售额"）
+    data_type       text,        -- 数据类型（numeric / text / integer）
+    description     text,        -- 属性语义描述
+    relation_type   text,        -- 关联类型（HAS_ATTRIBUTE / HAS_METRIC）
+    confidence      float        -- 关联置信度 [0, 1]
+) LANGUAGE plpgsql STABLE PARALLEL SAFE AS $$
+BEGIN
+    PERFORM validate_graph_name(p_graph_name);
+
+    RETURN QUERY
+    SELECT ae.id,
+           ae.attr_name,
+           ae.data_type,
+           ae.description,
+           oam.relation_type,
+           oam.confidence
+    FROM object_attribute_mapping oam
+    JOIN attribute_embeddings ae
+        ON ae.id = oam.attr_id
+       AND ae.graph_name = oam.graph_name
+    WHERE oam.graph_name = p_graph_name
+      AND oam.object_vertex_id = p_object_vertex_id
+    ORDER BY oam.confidence DESC;
+END;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- 8.6 get_related_objects — 图遍历查找关联对象
+-- ----------------------------------------------------------------------------
+-- 功能：通过 AGE 图边遍历，找出与给定对象有指定关系的其他对象
+-- 数据来源：AGE Cypher 查询 ontosql_graph 图
+-- 用途：Step 2 — Agent 发现候选对象后，通过图关系找出同部门同事、关联产品/客户等
+-- 注意：
+--   - p_relation_type 为 NULL 时返回所有关系类型
+--   - 依赖 search_path 包含 ontosql, ag_catalog（或调用前 SET search_path）
+--   - 返回的 vertex_id 是 AGE 图原生的 graphid，可直接用于后续函数
+-- ----------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION get_related_objects(
+    p_vertex_id         bigint,                       -- 源对象顶点 ID
+    p_graph_name        text DEFAULT 'ontosql_graph', -- 目标图名
+    p_relation_type     text DEFAULT NULL             -- 可选：过滤关系类型（如 'BELONGS_TO'），NULL=全部
+) RETURNS TABLE(
+    related_vertex_id   bigint,     -- 关联对象的顶点 ID
+    related_name        text,       -- 关联对象名称
+    related_label       text,       -- 关联对象标签（Object / Department / Metric / Dimension）
+    relation_type       text        -- 边关系类型（BELONGS_TO / HAS_METRIC / RELATED_TO / HAS_DIMENSION）
+) LANGUAGE plpgsql STABLE PARALLEL SAFE AS $$
+DECLARE
+    v_cypher text;
+    v_filter text := '';
+    v_valid_types text[] := ARRAY['BELONGS_TO', 'HAS_METRIC', 'RELATED_TO', 'HAS_DIMENSION'];
+BEGIN
+    PERFORM validate_graph_name(p_graph_name);
+
+    IF p_relation_type IS NOT NULL THEN
+        IF NOT (p_relation_type = ANY(v_valid_types)) THEN
+            RAISE EXCEPTION 'Invalid relation_type: "%". Allowed values: %',
+                p_relation_type, array_to_string(v_valid_types, ', ');
+        END IF;
+        v_filter := format(' AND type(r) = ''%s''', p_relation_type);
+    END IF;
+
+    v_cypher := format(
+        'MATCH (a)-[r]->(b) WHERE id(a) = %s%s RETURN id(b), b.name, label(b), type(r)',
+        p_vertex_id::text, v_filter
+    );
+
+    RETURN QUERY
+    SELECT (v.id)::bigint,
+           (v.name)::text,
+           (v.label)::text,
+           (v.rel)::text
+    FROM cypher(p_graph_name, v_cypher) AS v(id agtype, name agtype, label agtype, rel agtype);
+END;
+$$;
+
+COMMENT ON FUNCTION get_related_objects(bigint, text, text) IS
+'图遍历查找关联对象。注意：p_vertex_id 必须为有效整数，函数内部通过 ::text 显式转换确保类型安全。';
+
 -- ============================================================================
--- 8. 数据写入接口
+-- 9. 数据写入接口
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- 8.1 upsert_vertex_embedding — 插入或更新顶点 embedding
+-- 9.1 upsert_vertex_embedding — 插入或更新顶点 embedding
 -- ----------------------------------------------------------------------------
 -- 功能：向 vertex_embeddings 表写入/更新一条对象向量记录
 -- 行为：INSERT ... ON CONFLICT (graph_name, vertex_id) DO UPDATE（upsert）
@@ -375,6 +584,26 @@ CREATE OR REPLACE FUNCTION upsert_vertex_embedding(
     p_metadata      jsonb DEFAULT '{}'::jsonb  -- 扩展元数据（JSON 格式）
 ) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
+    PERFORM validate_graph_name(p_graph_name);
+
+    IF p_label_name IS NULL OR p_label_name = '' THEN
+        RAISE EXCEPTION 'p_label_name must not be NULL or empty';
+    END IF;
+
+    IF p_vertex_name IS NULL OR p_vertex_name = '' THEN
+        RAISE EXCEPTION 'p_vertex_name must not be NULL or empty';
+    END IF;
+
+    IF p_embedding IS NULL THEN
+        RAISE EXCEPTION 'p_embedding must not be NULL for vertex_id=% in graph=%',
+            p_vertex_id, p_graph_name;
+    END IF;
+
+    IF vector_dims(p_embedding) != 1536 THEN
+        RAISE EXCEPTION 'p_embedding dimension must be 1536, got % for vertex_id=% in graph=%',
+            vector_dims(p_embedding), p_vertex_id, p_graph_name;
+    END IF;
+
     INSERT INTO vertex_embeddings
         (vertex_id, graph_name, label_name, vertex_name, description, embedding, metadata)
     VALUES
@@ -390,7 +619,7 @@ END;
 $$;
 
 -- ----------------------------------------------------------------------------
--- 8.2 upsert_attribute_embedding — 插入或更新属性 embedding
+-- 9.2 upsert_attribute_embedding — 插入或更新属性 embedding
 -- ----------------------------------------------------------------------------
 -- 功能：向 attribute_embeddings 表写入/更新一条属性向量记录
 -- 返回：attr_id（便于后续调用 link_object_attribute() 建立关联）
@@ -408,6 +637,22 @@ CREATE OR REPLACE FUNCTION upsert_attribute_embedding(
 DECLARE
     v_attr_id int;
 BEGIN
+    PERFORM validate_graph_name(p_graph_name);
+
+    IF p_attr_name IS NULL OR p_attr_name = '' THEN
+        RAISE EXCEPTION 'p_attr_name must not be NULL or empty';
+    END IF;
+
+    IF p_embedding IS NULL THEN
+        RAISE EXCEPTION 'p_embedding must not be NULL for attr_name="%" in graph=%',
+            p_attr_name, p_graph_name;
+    END IF;
+
+    IF vector_dims(p_embedding) != 1536 THEN
+        RAISE EXCEPTION 'p_embedding dimension must be 1536, got % for attr_name="%" in graph=%',
+            vector_dims(p_embedding), p_attr_name, p_graph_name;
+    END IF;
+
     INSERT INTO attribute_embeddings
         (attr_name, graph_name, attr_vertex_id, aliases, description, data_type, embedding)
     VALUES
@@ -425,7 +670,7 @@ END;
 $$;
 
 -- ----------------------------------------------------------------------------
--- 8.3 link_object_attribute — 建立对象-属性关联
+-- 9.3 link_object_attribute — 建立对象-属性关联
 -- ----------------------------------------------------------------------------
 -- 功能：将对象（vertex_id）与属性（attr_id）建立关联，写入 object_attribute_mapping 表
 -- 行为：ON CONFLICT DO UPDATE（支持重复调用，幂等）
@@ -445,6 +690,12 @@ CREATE OR REPLACE FUNCTION link_object_attribute(
 DECLARE
     v_label text;
 BEGIN
+    PERFORM validate_graph_name(p_graph_name);
+
+    IF p_confidence < 0 OR p_confidence > 1 THEN
+        RAISE EXCEPTION 'p_confidence must be between 0 and 1, got %', p_confidence;
+    END IF;
+
     -- 校验：vertex_id 必须在 vertex_embeddings 中存在
     SELECT label_name INTO v_label
     FROM vertex_embeddings
@@ -454,9 +705,13 @@ BEGIN
             p_object_vertex_id, p_graph_name;
     END IF;
 
-    -- 校验：attr_id 必须在 attribute_embeddings 中存在
-    IF NOT EXISTS (SELECT 1 FROM attribute_embeddings WHERE id = p_attr_id) THEN
-        RAISE EXCEPTION 'attr_id=% not found in attribute_embeddings', p_attr_id;
+    -- 校验：attr_id 必须在 attribute_embeddings 中存在，且属于同一图
+    IF NOT EXISTS (
+        SELECT 1 FROM attribute_embeddings
+        WHERE id = p_attr_id AND graph_name = p_graph_name
+    ) THEN
+        RAISE EXCEPTION 'attr_id=% not found in attribute_embeddings for graph=%',
+            p_attr_id, p_graph_name;
     END IF;
 
     -- 写入：重复插入时更新 relation_type 和 confidence

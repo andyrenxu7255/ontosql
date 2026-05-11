@@ -23,9 +23,22 @@ SET search_path TO ontosql, ag_catalog, public;
 -- ============================================================================
 -- 1. 创建图
 -- ============================================================================
+-- 注意：Apache AGE 的 create_graph() 函数不支持 IF NOT EXISTS 语法，
+--       因此使用 DO 块先检查图是否存在，避免重复创建时报错
+-- ============================================================================
 
--- 创建名为 ontosql_graph 的图，后续所有顶点和边都归属此图
-SELECT create_graph('ontosql_graph');
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM ag_catalog.ag_graph WHERE graph_name = 'ontosql_graph'
+    ) THEN
+        SELECT create_graph('ontosql_graph');
+        RAISE NOTICE 'Graph ontosql_graph created successfully';
+    ELSE
+        RAISE NOTICE 'Graph ontosql_graph already exists, skipping creation';
+    END IF;
+END;
+$$;
 
 -- ============================================================================
 -- 2. 创建顶点标签

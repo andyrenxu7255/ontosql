@@ -41,11 +41,15 @@ COPY upstream/pgvector /tmp/pgvector
 COPY upstream/age /tmp/age
 
 # 编译 PostgreSQL
+# DEBUG 和 CASSERT 通过构建参数控制（默认关闭，生产环境优化）
+# 开发调试: docker build --build-arg ENABLE_DEBUG=1 --build-arg ENABLE_CASSERT=1 ...
 WORKDIR /tmp/postgresql
+ARG ENABLE_DEBUG=0
+ARG ENABLE_CASSERT=0
 RUN ./configure \
         --prefix=/usr/local/pgsql \
-        --enable-debug \
-        --enable-cassert \
+        $(if [ "$ENABLE_DEBUG" = "1" ]; then echo '--enable-debug'; fi) \
+        $(if [ "$ENABLE_CASSERT" = "1" ]; then echo '--enable-cassert'; fi) \
         --with-icu \
         --with-lz4 \
         --with-zstd \
@@ -92,6 +96,7 @@ RUN set -ex; \
         python3 \
         libsystemd0 \
         libcurl4 \
+        openssl \
     ; \
     rm -rf /var/lib/apt/lists/*
 

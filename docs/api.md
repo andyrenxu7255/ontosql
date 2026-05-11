@@ -226,9 +226,113 @@ SELECT * FROM search_object_attribute('张三的销售额', 'ontosql_graph');
 
 ---
 
-## 6. 数据写入
+## 6. 对象属性列表
 
-### 6.1 upsert_vertex_embedding
+### 6.1 get_object_attributes
+
+列出指定对象拥有的全部属性字段（名称、数据类型、描述）。
+
+#### 函数签名
+
+```sql
+FUNCTION get_object_attributes(
+    p_object_vertex_id  bigint,                  -- 对象顶点 ID
+    p_graph_name        text DEFAULT 'default'   -- 目标图名（与其他函数一致）
+) RETURNS TABLE(
+    attr_id         int,         -- 属性 ID
+    attr_name       text,        -- 属性名称
+    data_type       text,        -- 数据类型
+    description     text,        -- 属性描述
+    relation_type   text,        -- 关联类型
+    confidence      float        -- 关联置信度
+)
+```
+
+#### 使用示例
+
+```sql
+SELECT attr_name, data_type, description
+FROM get_object_attributes(
+    (SELECT vertex_id FROM vertex_embeddings WHERE vertex_name = '张三' LIMIT 1),
+    'ontosql_graph'
+);
+
+-- 结果：
+--  attr_name | data_type |    description
+-- -----------+-----------+---------------------
+--  销售额    | numeric   | 销售产生的总金额
+--  客户数    | integer   | 服务的客户总量
+--  回款率    | numeric   | 已回款占总应收款比例
+```
+
+---
+
+## 7. 图遍历
+
+### 7.1 get_related_objects
+
+通过 AGE 图边遍历，查找与指定对象有关联关系的其他对象。
+
+#### 函数签名
+
+```sql
+FUNCTION get_related_objects(
+    p_vertex_id     bigint,                       -- 源对象顶点 ID
+    p_graph_name    text DEFAULT 'ontosql_graph', -- 图名（与 AGE 默认图名一致）
+    p_relation_type text DEFAULT NULL             -- 可选：过滤关系类型，NULL=全部
+) RETURNS TABLE(
+    related_vertex_id   bigint,     -- 关联对象顶点 ID
+    related_name        text,       -- 关联对象名称
+    related_label       text,       -- 关联对象标签
+    relation_type       text        -- 边关系类型
+)
+```
+
+#### 使用示例
+
+```sql
+-- 找张三的部门
+SELECT related_name, relation_type
+FROM get_related_objects(
+    (SELECT vertex_id FROM vertex_embeddings WHERE vertex_name = '张三' LIMIT 1),
+    'ontosql_graph',
+    'BELONGS_TO'
+);
+-- 结果：
+--  related_name | relation_type
+-- --------------+---------------
+--  销售部       | BELONGS_TO
+
+-- 找张三的所有关系（不过滤类型）
+SELECT related_name, related_label, relation_type
+FROM get_related_objects(
+    (SELECT vertex_id FROM vertex_embeddings WHERE vertex_name = '张三' LIMIT 1),
+    'ontosql_graph'
+);
+-- 结果：
+--  related_name | related_label | relation_type
+-- --------------+---------------+---------------
+--  销售额       | Metric        | HAS_METRIC
+--  客户数       | Metric        | HAS_METRIC
+--  回款率       | Metric        | HAS_METRIC
+--  销售部       | Department    | BELONGS_TO
+--  钱七         | Object        | RELATED_TO
+```
+
+#### 可用关系类型
+
+| 关系类型 | 含义 | 示例 |
+|---------|------|------|
+| `BELONGS_TO` | 从属关系 | 张三 → 销售部 |
+| `HAS_METRIC` | 拥有指标 | 张三 → 销售额 |
+| `HAS_DIMENSION` | 关联维度 | 销售额 → 本月 |
+| `RELATED_TO` | 其他关联 | 张三 → 钱七（同部门） |
+
+---
+
+## 8. 数据写入
+
+### 8.1 upsert_vertex_embedding
 
 插入或更新对象的 embedding。
 
@@ -258,7 +362,7 @@ SELECT upsert_vertex_embedding(
 );
 ```
 
-### 6.2 upsert_attribute_embedding
+### 8.2 upsert_attribute_embedding
 
 插入或更新属性的 embedding。**返回 attr_id**。
 
@@ -289,7 +393,7 @@ SELECT upsert_attribute_embedding(
 -- 返回: 1 （attr_id）
 ```
 
-### 6.3 link_object_attribute
+### 8.3 link_object_attribute
 
 建立对象与属性的关联。
 
@@ -305,32 +409,58 @@ FUNCTION link_object_attribute(
 
 ---
 
-## 7. 综合示例：完整智能问数流程
+## 9. 综合示例：Agent 三步工作流
 
 ```sql
--- 步骤 1：用户输入 "张三上月销售额多少"
--- 步骤 2：调用联合检索
-SELECT * FROM search_object_attribute('张三上月销售额', 'ontosql_graph', 5);
--- 得到结果：张三 + 销售额，is_verified = true
+-- 用户输入: "张三上月销售额多少"
+-- 前置条件: metadata 已写入对象/属性的业务表映射
 
--- 步骤 3：通过 Cypher 查询实际数值
-SELECT * FROM cypher('ontosql_graph', $$
-    MATCH (obj:Object {name: '张三'})
-          -[:HAS_METRIC]->(m:Metric {name: '销售额'})
-          -[:HAS_DIMENSION]->(d:Dimension {name: '上月'})
-    RETURN obj.name, m.name, d.name
-$$) AS (obj_name agtype, metric_name agtype, dim agtype);
+-- Step 1: 联合检索
+SELECT object_name, attr_name, combined_score, is_verified
+FROM search_object_attribute('张三上月销售额', 'ontosql_graph', 10);
+-- 返回: (张三, 销售额, 0.9623, true)  ← 取 is_verified=true
 
--- 步骤 4：结合业务数据仓库返回实际数值
+-- Step 2a: 列出张三的全部属性
+SELECT attr_name, data_type, description
+FROM get_object_attributes(
+    (SELECT vertex_id FROM vertex_embeddings WHERE vertex_name = '张三' LIMIT 1),
+    'ontosql_graph'
+);
+
+-- Step 2b: 找张三的部门
+SELECT related_name, relation_type
+FROM get_related_objects(
+    (SELECT vertex_id FROM vertex_embeddings WHERE vertex_name = '张三' LIMIT 1),
+    'ontosql_graph',
+    'BELONGS_TO'
+);
+
+-- Step 3: 读 metadata → Agent 生成业务 SQL
+SELECT vertex_name, metadata FROM vertex_embeddings WHERE vertex_name = '张三';
+SELECT attr_name, metadata FROM attribute_embeddings WHERE attr_name = '销售额';
+-- Agent 根据 metadata 中的 business_table/column/aggregation 拼出最终 SQL
 ```
 
 ---
 
-## 错误码定义
+## 错误处理策略
+
+> **注意**：当前版本采用以下错误处理策略，暂未实现结构化错误码返回。以下错误码为规划中的设计规范。
+
+### 当前实际行为
+
+| 场景 | 行为 |
+|------|------|
+| 查询文本为空 | 检索函数返回空结果集（不报错） |
+| 指定的图名无数据 | 返回空结果集（不报错） |
+| 属性/对象 ID 不存在 | `link_object_attribute()` 抛出 `RAISE EXCEPTION` |
+| 向量维度不匹配 | PostgreSQL 类型系统自动校验，违反时报错 |
+| 唯一约束冲突 | `ON CONFLICT` upsert 自动处理（或报错） |
+
+### 规划错误码（待实现）
 
 | 错误码 | 分类 | 说明 |
 |--------|------|------|
-| `0` | 成功 | 操作正常完成 |
 | `ERR_EMPTY_QUERY` | 输入错误 | 查询文本为空 |
 | `ERR_GRAPH_NOT_FOUND` | 输入错误 | 指定的图名不存在 |
 | `ERR_ATTR_NOT_FOUND` | 数据错误 | 属性 ID 不存在 |
@@ -341,6 +471,8 @@ $$) AS (obj_name agtype, metric_name agtype, dim agtype);
 ---
 
 ## 性能基准
+
+> **注意**：以下性能数据为基于架构设计的预期/规划值，尚未经过实际压力测试验证。实际性能受数据量、硬件配置、并发负载等因素影响。
 
 | 操作 | 数据规模 | 预期延迟 |
 |------|---------|---------|

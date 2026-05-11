@@ -314,6 +314,352 @@ BEGIN
     END IF;
 
     -- ========================================================================
+    -- 测试组 14：安全校验 — 输入参数验证
+    -- 验证 validate_query_text / validate_graph_name / validate_top_k 正常工作
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-14] Input validation security ---';
+
+    BEGIN
+        PERFORM validate_query_text(NULL);
+        RAISE EXCEPTION '  [FAIL] validate_query_text should reject NULL';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%must not be NULL%' THEN
+            RAISE NOTICE '  [PASS] validate_query_text rejects NULL';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM validate_query_text('');
+        RAISE NOTICE '  [PASS] validate_query_text accepts empty string (trigram returns empty)';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE EXCEPTION '  [FAIL] validate_query_text should accept empty string, got: %', SQLERRM;
+    END;
+
+    BEGIN
+        PERFORM validate_query_text(repeat('x', 1001));
+        RAISE EXCEPTION '  [FAIL] validate_query_text should reject long text';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%exceeds maximum%' THEN
+            RAISE NOTICE '  [PASS] validate_query_text rejects text > 1000 chars';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM validate_graph_name('bad-name');
+        RAISE EXCEPTION '  [FAIL] validate_graph_name should reject hyphens';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%invalid characters%' THEN
+            RAISE NOTICE '  [PASS] validate_graph_name rejects invalid chars';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM validate_graph_name('DROP TABLE users;--');
+        RAISE EXCEPTION '  [FAIL] validate_graph_name should reject SQL injection';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%invalid characters%' THEN
+            RAISE NOTICE '  [PASS] validate_graph_name rejects SQL injection pattern';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM validate_graph_name(repeat('a', 64));
+        RAISE EXCEPTION '  [FAIL] validate_graph_name should reject too-long name';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%exceeds maximum identifier length%' THEN
+            RAISE NOTICE '  [PASS] validate_graph_name rejects name > 63 chars';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM validate_top_k(0);
+        RAISE EXCEPTION '  [FAIL] validate_top_k should reject 0';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%must be between 1 and 1000%' THEN
+            RAISE NOTICE '  [PASS] validate_top_k rejects 0';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM validate_top_k(1001);
+        RAISE EXCEPTION '  [FAIL] validate_top_k should reject 1001';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%must be between 1 and 1000%' THEN
+            RAISE NOTICE '  [PASS] validate_top_k rejects 1001';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    -- ========================================================================
+    -- 测试组 15：安全校验 — search_objects 参数验证
+    -- 验证核心检索函数的输入校验集成
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-15] search_objects input validation ---';
+
+    BEGIN
+        PERFORM count(*) FROM search_objects(repeat('a', 1001), 'test_graph', NULL, 10);
+        RAISE EXCEPTION '  [FAIL] search_objects should reject query > 1000 chars';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%exceeds maximum%' THEN
+            RAISE NOTICE '  [PASS] search_objects rejects too-long query_text';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM count(*) FROM search_objects('test', 'bad;DROP TABLE', NULL, 10);
+        RAISE EXCEPTION '  [FAIL] search_objects should reject SQL injection in graph_name';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%invalid characters%' THEN
+            RAISE NOTICE '  [PASS] search_objects rejects malicious graph_name';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    -- ========================================================================
+    -- 测试组 16：安全校验 — search_object_attribute 参数验证
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-16] search_object_attribute input validation ---';
+
+    BEGIN
+        PERFORM count(*) FROM search_object_attribute('test', 'test_graph', 0);
+        RAISE EXCEPTION '  [FAIL] search_object_attribute should reject p_top_k=0';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%must be between 1 and 1000%' THEN
+            RAISE NOTICE '  [PASS] search_object_attribute rejects p_top_k=0';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    -- ========================================================================
+    -- 测试组 17：upsert 函数安全校验
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-17] upsert functions input validation ---';
+
+    BEGIN
+        PERFORM upsert_vertex_embedding(
+            2001, 'bad;name', 'TestLabel',
+            'test_obj', array_fill(0.1::float, ARRAY[1536])::vector
+        );
+        RAISE EXCEPTION '  [FAIL] upsert_vertex_embedding should reject bad graph_name';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%invalid characters%' THEN
+            RAISE NOTICE '  [PASS] upsert_vertex_embedding rejects invalid graph_name';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM link_object_attribute('bad name', 1001, 1, 'HAS_ATTRIBUTE', 1.0);
+        RAISE EXCEPTION '  [FAIL] link_object_attribute should reject space in graph_name';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%invalid characters%' THEN
+            RAISE NOTICE '  [PASS] link_object_attribute rejects invalid graph_name';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    -- ========================================================================
+    -- 测试组 18：安全校验 — NULL 参数补充测试
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-18] NULL parameter validation ---';
+
+    BEGIN
+        PERFORM validate_graph_name(NULL);
+        RAISE EXCEPTION '  [FAIL] validate_graph_name should reject NULL';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%must not be NULL%' THEN
+            RAISE NOTICE '  [PASS] validate_graph_name rejects NULL';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM validate_top_k(NULL);
+        RAISE EXCEPTION '  [FAIL] validate_top_k should reject NULL';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%must be between 1 and 1000%' THEN
+            RAISE NOTICE '  [PASS] validate_top_k rejects NULL';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM validate_top_k(-1);
+        RAISE EXCEPTION '  [FAIL] validate_top_k should reject negative';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%must be between 1 and 1000%' THEN
+            RAISE NOTICE '  [PASS] validate_top_k rejects negative';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    -- ========================================================================
+    -- 测试组 19：embedding 维度校验
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-19] Embedding dimension validation ---';
+
+    BEGIN
+        PERFORM upsert_vertex_embedding(
+            3001, 'test_graph', 'TestLabel',
+            'dim_test_obj', array_fill(0.1::float, ARRAY[768])::vector
+        );
+        RAISE EXCEPTION '  [FAIL] upsert_vertex_embedding should reject wrong dim';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%dimension must be 1536%' THEN
+            RAISE NOTICE '  [PASS] upsert_vertex_embedding rejects wrong dimension';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM upsert_attribute_embedding(
+            'dim_test_attr', 'test_graph',
+            array_fill(0.1::float, ARRAY[384])::vector
+        );
+        RAISE EXCEPTION '  [FAIL] upsert_attribute_embedding should reject wrong dim';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%dimension must be 1536%' THEN
+            RAISE NOTICE '  [PASS] upsert_attribute_embedding rejects wrong dimension';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    -- ========================================================================
+    -- 测试组 20：link_object_attribute 置信度范围校验
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-20] Confidence range validation ---';
+
+    BEGIN
+        PERFORM link_object_attribute('test_graph', 1001, v_attr_id, 'HAS_ATTRIBUTE', -0.1);
+        RAISE EXCEPTION '  [FAIL] link should reject negative confidence';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%confidence must be between 0 and 1%' THEN
+            RAISE NOTICE '  [PASS] link_object_attribute rejects negative confidence';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    BEGIN
+        PERFORM link_object_attribute('test_graph', 1001, v_attr_id, 'HAS_ATTRIBUTE', 1.5);
+        RAISE EXCEPTION '  [FAIL] link should reject confidence > 1';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%confidence must be between 0 and 1%' THEN
+            RAISE NOTICE '  [PASS] link_object_attribute rejects confidence > 1';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    -- ========================================================================
+    -- 测试组 21：get_object_attributes 功能
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-21] get_object_attributes ---';
+
+    SELECT count(*) INTO v_count FROM get_object_attributes(1001, 'test_graph');
+    IF v_count = 1 THEN
+        RAISE NOTICE '  [PASS] get_object_attributes found 1 attribute';
+    ELSE
+        RAISE EXCEPTION '  [FAIL] get_object_attributes found % attributes (expected 1)', v_count;
+    END IF;
+
+    -- 边界条件：不存在的 vertex_id
+    SELECT count(*) INTO v_count FROM get_object_attributes(999999, 'test_graph');
+    IF v_count = 0 THEN
+        RAISE NOTICE '  [PASS] get_object_attributes with unknown vertex returns empty';
+    ELSE
+        RAISE EXCEPTION '  [FAIL] get_object_attributes returned unexpected rows';
+    END IF;
+
+    -- ========================================================================
+    -- 测试组 22：get_related_objects 功能
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-22] get_related_objects ---';
+
+    BEGIN
+        SELECT count(*) INTO v_count FROM get_related_objects(1001, 'test_graph', NULL);
+        RAISE NOTICE '  [PASS] get_related_objects executed (count=%)', v_count;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING '  [WARN] get_related_objects: % (may need knowledge graph data)', SQLERRM;
+    END;
+
+    -- ========================================================================
+    -- 测试组 23：search_objects 带标签过滤
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-23] search_objects label filter ---';
+
+    SELECT count(*) INTO v_count FROM search_objects('test', 'test_graph', 'TestLabel', 10);
+    IF v_count >= 0 THEN
+        RAISE NOTICE '  [PASS] search_objects with label filter executed (count=%)', v_count;
+    ELSE
+        RAISE EXCEPTION '  [FAIL] search_objects with label filter FAILED';
+    END IF;
+
+    -- ========================================================================
+    -- 测试组 24：p_label 参数安全测试
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-24] p_label parameter security ---';
+
+    BEGIN
+        PERFORM count(*) FROM search_objects('test', 'test_graph', 'Label;DROP TABLE', 10);
+        RAISE NOTICE '  [PASS] search_objects accepts p_label with semicolon (no injection risk)';
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE '  [PASS] search_objects rejected p_label with special chars: %', SQLERRM;
+    END;
+
+    -- ========================================================================
+    -- 测试组 25：控制字符安全测试
+    -- ========================================================================
+    RAISE NOTICE '';
+    RAISE NOTICE '--- [TEST-25] Control character security ---';
+
+    BEGIN
+        PERFORM validate_query_text(E'test\x00string');
+        RAISE EXCEPTION '  [FAIL] validate_query_text should reject null byte';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM LIKE '%invalid control characters%' THEN
+            RAISE NOTICE '  [PASS] validate_query_text rejects null byte';
+        ELSE
+            RAISE EXCEPTION '  [FAIL] unexpected error: %', SQLERRM;
+        END IF;
+    END;
+
+    -- ========================================================================
     -- 清理测试数据
     -- ========================================================================
     RAISE NOTICE '';

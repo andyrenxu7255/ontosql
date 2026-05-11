@@ -1,6 +1,6 @@
 # OntoSQL
 
-> 面向「智能问数」的融合数据库 — PostgreSQL 16/17 + pgvector + Apache AGE
+> 面向「智能问数」的融合数据库 — PostgreSQL 17.4 + pgvector 0.8.1 + Apache AGE 1.7.0-dev
 
 ## 项目定位
 
@@ -55,7 +55,12 @@ ontosql/
 ├── docs/                # 文档
 │   ├── api.md           # API 参考
 │   ├── ops.md           # 运维手册
-│   └── architecture.md  # 架构总览
+│   ├── architecture.md  # 架构总览
+│   ├── modules.md       # 模块功能说明
+│   ├── data_dictionary.md # 数据字典
+│   ├── object_index.md  # 核心对象图谱索引
+│   ├── agent_guide.md   # Agent 对接指南
+│   └── knowledge_graph.md # 本体图谱
 ├── examples/            # 使用示例
 ├── tests/               # 测试用例
 │   ├── setup.sql
@@ -96,5 +101,10 @@ ontosql/
 - [API 参考](docs/api.md) — 接口参数、返回值、错误码
 - [运维手册](docs/ops.md) — 部署、优化、排障、升级
 - [架构总览](docs/architecture.md) — 架构设计决策和组件关系
+- [模块手册](docs/modules.md) — 模块功能详细说明
+- [数据字典](docs/data_dictionary.md) — 完整表结构与函数清单
+- [对象索引](docs/object_index.md) — 核心对象关系图谱
+- [Agent 对接指南](docs/agent_guide.md) — Agent 三步工作流对接指南
+- [本体图谱](docs/knowledge_graph.md) — Agent 按图索骥索引
 - [使用示例](examples/usage.sql) — 11 个典型场景示例
-- [测试用例](tests/test_cases.sql) — 13 组功能/边界/异常测试
+- [测试用例](tests/test_cases.sql) — 24 组功能/边界/异常测试

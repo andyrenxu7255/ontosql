@@ -81,8 +81,8 @@ build/pgsql17/bin/psql -p 5432 -U <user> -d postgres -f sql/002_knowledge_graph.
 
 | 服务器内存 | shared_buffers | effective_cache_size | work_mem | maintenance_work_mem |
 |-----------|----------------|---------------------|----------|---------------------|
-| 8 GB | 512 MB | 2 GB | 32 MB | 256 MB |
-| 16 GB | 4 GB | 8 GB | 64 MB | 512 MB |
+| 8 GB | 2 GB | 6 GB | 32 MB | 256 MB |
+| 16 GB | 4 GB | 12 GB | 64 MB | 512 MB |
 | 32 GB | 8 GB | 24 GB | 128 MB | 1 GB |
 | 64 GB | 16 GB | 48 GB | 256 MB | 2 GB |
 

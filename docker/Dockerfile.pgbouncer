@@ -1,0 +1,25 @@
+# ============================================================================
+# OntoSQL PgBouncer 连接池 Docker 镜像
+# ============================================================================
+# 构建：docker build -t ontosql-pgbouncer:latest -f docker/Dockerfile.pgbouncer .
+# 说明：轻量级连接池镜像，用于生产环境连接复用和负载均衡
+# 安全：以 pgbouncer 用户运行，无 root 权限
+# ============================================================================
+
+FROM debian:bookworm-slim
+
+RUN set -ex; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends pgbouncer; \
+    rm -rf /var/lib/apt/lists/*; \
+    mkdir -p /etc/pgbouncer /var/run/pgbouncer; \
+    groupadd -r pgbouncer && useradd -r -g pgbouncer -d /var/run/pgbouncer pgbouncer; \
+    chown -R pgbouncer:pgbouncer /etc/pgbouncer /var/run/pgbouncer
+
+COPY config/pgbouncer.ini /etc/pgbouncer/pgbouncer.ini
+COPY docker/pgbouncer-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 6432
+USER pgbouncer
+ENTRYPOINT ["/entrypoint.sh"]

@@ -69,7 +69,8 @@ make test     # 自动加载 Schema 并运行测试
 # 检查已安装的扩展
 build/pgsql17/bin/psql -p 5432 -d postgres -c "\dx"
 
-# 应显示: age, pg_trgm, plpgsql, vector 四个扩展
+# 应显示: age, plpgsql, vector 三个扩展
+# 注意: pg_trgm 在首次执行 sql/001_core_schema.sql 或 tests/setup.sql 时自动创建
 
 # 创建示例知识图谱
 build/pgsql17/bin/psql -p 5432 -d postgres -f sql/002_knowledge_graph.sql
@@ -105,7 +106,14 @@ ontosql/
 │   ├── overview.md                 #   项目定位与查询流程
 │   ├── architecture.md             #   架构总览与设计决策
 │   ├── api.md                      #   接口参数、返回值、错误码
-│   └── ops.md                      #   部署、优化、备份、升级
+│   ├── ops.md                      #   部署、优化、备份、升级
+│   ├── modules.md                  #   模块功能详细说明
+│   ├── data_dictionary.md          #   数据字典（完整表结构定义）
+│   ├── object_index.md             #   核心对象图谱索引
+│   ├── code_review.md              #   代码审查报告
+│   ├── consistency_audit.md        #   文档一致性审计与代码审计
+│   ├── agent_guide.md              #   Agent 三步工作流对接指南
+│   └── knowledge_graph.md          #   本体图谱（Agent 按图索骥索引）
 ├── examples/                       # 使用示例
 │   └── usage.sql                   #   11 个典型场景 SQL 示例
 ├── tests/                          # 测试用例
@@ -153,8 +161,15 @@ ontosql/
 | [API 参考](docs/api.md) | 接口参数、返回值、错误码 | 应用开发者 |
 | [运维手册](docs/ops.md) | 部署、调优、备份、升级 | SRE / DBA |
 | [项目定位](docs/overview.md) | 项目背景与能力矩阵 | 产品经理、新成员 |
-| [使用示例](examples/usage.sql) | 可执行的 SQL 示例 | 开发者 |
-| [测试用例](tests/test_cases.sql) | 功能验证和回归测试 | QA、开发者 |
+| [模块手册](docs/modules.md) | 模块功能详细说明 | 开发者 |
+| [Agent 对接指南](docs/agent_guide.md) | Agent 三步工作流对接指南 | Agent 开发者 |
+| [本体图谱](docs/knowledge_graph.md) | Agent 按图索骥索引 | Agent / 全体开发者 |
+- [使用示例](examples/usage.sql) — 11 个典型场景示例
+- [测试用例](tests/test_cases.sql) — 24 组功能/边界/异常/安全测试
+- [数据字典](docs/data_dictionary.md) — 数据模型与函数清单
+- [对象索引](docs/object_index.md) — 核心对象关系图谱
+- [文档一致性审计](docs/consistency_audit.md) — 代码与文档一致性检查
+- [代码审查报告](docs/code_review.md) — 代码质量评估与建议
 
 ---
 

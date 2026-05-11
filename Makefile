@@ -20,6 +20,8 @@ PG_DATA     ?= $(CURDIR)/build/data
 PG_LOG      ?= $(PG_DATA)/pg.log
 # 监听端口
 PG_PORT     ?= 5432
+# 数据库用户（peer 认证时需与 OS 用户一致，可通过环境变量覆盖）
+PG_USER     ?= $$(whoami)
 
 # 上游源码路径
 PG_SRC      := $(CURDIR)/upstream/postgresql
@@ -83,15 +85,19 @@ install: build
 # init-db — 初始化新的数据库实例（会清空旧数据）
 # ----------------------------------------------------------------------------
 # 配置项写入 postgresql.conf 和 pg_hba.conf
+# 注意：pg_hba.conf 使用覆盖写入（>）而非追加（>>），确保自定义规则不会被
+#       initdb 默认生成的 trust 规则遮蔽（首条匹配优先原则）
+#       scram-sha-256 替代 md5 提供更强的密码哈希保护
 init-db:
 	@echo "=== Initializing database ==="
 	rm -rf $(PG_DATA)
-	$(PG_HOME)/bin/initdb -D $(PG_DATA) --encoding=UTF8 --locale=C.UTF-8
+	$(PG_HOME)/bin/initdb -D $(PG_DATA) --encoding=UTF8 --locale=C.UTF-8 --auth=scram-sha-256
 	@echo "listen_addresses = '*'" >> $(PG_DATA)/postgresql.conf
 	@echo "shared_buffers = 256MB" >> $(PG_DATA)/postgresql.conf
 	@echo "work_mem = 16MB" >> $(PG_DATA)/postgresql.conf
 	@echo "port = $(PG_PORT)" >> $(PG_DATA)/postgresql.conf
-	@echo "host all all 0.0.0.0/0 trust" >> $(PG_DATA)/pg_hba.conf
+	@echo "statement_timeout = 30000" >> $(PG_DATA)/postgresql.conf
+	@printf 'local   all             all                                     peer\nhost    all             all             0.0.0.0/0               scram-sha-256\nhost    all             all             ::/128                  scram-sha-256\n' > $(PG_DATA)/pg_hba.conf
 
 # ----------------------------------------------------------------------------
 # start — 启动数据库并加载 vector 和 age 扩展
@@ -100,9 +106,9 @@ start:
 	$(PG_HOME)/bin/pg_ctl -D $(PG_DATA) -l $(PG_LOG) start
 	@echo "=== PostgreSQL started on port $(PG_PORT) ==="
 	@sleep 2
-	$(PG_HOME)/bin/psql -p $(PG_PORT) -U $$(whoami) -d postgres \
+	$(PG_HOME)/bin/psql -p $(PG_PORT) -U $(PG_USER) -d postgres \
 		-c "CREATE EXTENSION IF NOT EXISTS vector;"
-	$(PG_HOME)/bin/psql -p $(PG_PORT) -U $$(whoami) -d postgres \
+	$(PG_HOME)/bin/psql -p $(PG_PORT) -U $(PG_USER) -d postgres \
 		-c "CREATE EXTENSION IF NOT EXISTS age;"
 	@echo "=== Extensions loaded ==="
 
@@ -126,24 +132,31 @@ clean:
 # ----------------------------------------------------------------------------
 # test — 运行测试套件
 # ----------------------------------------------------------------------------
-# 流程：初始化测试环境 → 创建 ontosql Schema → 执行 13 组测试用例
+# 流程：初始化测试环境 → 创建 ontosql Schema → 执行 23 组测试用例
 test:
-	$(PG_HOME)/bin/psql -p $(PG_PORT) -U $$(whoami) -d postgres -f $(CURDIR)/tests/setup.sql
-	$(PG_HOME)/bin/psql -p $(PG_PORT) -U $$(whoami) -d postgres -f $(CURDIR)/tests/test_cases.sql
+	$(PG_HOME)/bin/psql -p $(PG_PORT) -U $(PG_USER) -d postgres -f $(CURDIR)/tests/setup.sql
+	$(PG_HOME)/bin/psql -p $(PG_PORT) -U $(PG_USER) -d postgres -f $(CURDIR)/tests/test_cases.sql
 
 # ----------------------------------------------------------------------------
 # docs — 文档索引
 # ----------------------------------------------------------------------------
 docs:
 	@echo "=== Documentation available in docs/ ==="
-	@echo "  docs/api.md         - API reference"
-	@echo "  docs/ops.md         - Operations manual"
-	@echo "  docs/architecture.md - Architecture overview"
-	@echo "  docs/overview.md     - Project overview"
-	@echo "  examples/usage.sql   - Usage examples"
+	@echo "  docs/api.md              - API reference"
+	@echo "  docs/ops.md              - Operations manual"
+	@echo "  docs/architecture.md     - Architecture overview"
+	@echo "  docs/overview.md         - Project overview"
+	@echo "  docs/modules.md          - Module reference"
+	@echo "  docs/data_dictionary.md  - Data dictionary"
+	@echo "  docs/object_index.md     - Object graph index"
+	@echo "  docs/code_review.md      - Code review report"
+	@echo "  docs/consistency_audit.md - Consistency audit report"
+	@echo "  docs/agent_guide.md      - Agent integration guide"
+	@echo "  docs/knowledge_graph.md  - Ontology graph (agent-oriented)"
+	@echo "  examples/usage.sql       - Usage examples"
 
 # ----------------------------------------------------------------------------
 # psql — 快速进入数据库交互终端
 # ----------------------------------------------------------------------------
 psql:
-	$(PG_HOME)/bin/psql -p $(PG_PORT) -U $$(whoami) -d postgres
+	$(PG_HOME)/bin/psql -p $(PG_PORT) -U $(PG_USER) -d postgres

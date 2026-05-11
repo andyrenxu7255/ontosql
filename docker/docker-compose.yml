@@ -2,9 +2,11 @@
 # OntoSQL Docker Compose 编排文件
 # ============================================================================
 # 启动：docker compose up -d
+# 关闭：docker compose down
 # 环境变量：
-#   PG_PORT             监听端口（默认 5432）
-#   POSTGRES_PASSWORD   postgres 用户密码（默认 ontosql）
+#   PG_PORT              数据库暴露端口（默认 5432）
+#   PGBOUNCER_PORT       PgBouncer 连接池暴露端口（默认 6432）
+#   POSTGRES_PASSWORD    postgres 用户密码（必填，无默认值）
 # ============================================================================
 
 services:
@@ -19,9 +21,9 @@ services:
     ports:
       - "${PG_PORT:-5432}:5432"
 
-    # 数据库密码：通过环境变量传入，entrypoint.sh 读取设置
+    # 数据库密码：通过环境变量传入，entrypoint.sh 读取设置（必须设置，无默认值）
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ontosql}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?err}
 
     # 数据持久化：将 PG 数据目录挂载到命名卷
     # SQL Schema 只读挂载，方便手动初始化
@@ -40,14 +42,59 @@ services:
     restart: unless-stopped
 
     # 资源限制：防止内存泄漏或异常消耗影响宿主机
+    # 注意：PG + pgvector + AGE + HNSW 索引查询需要至少 1GB 内存
+    # 生产环境建议根据 ops.md 中的表格分配更多资源
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 1GB
 
-    # 安全加固：禁止容器内进程提升权限
+    # 安全加固：禁止容器内进程提升权限，移除不必要的内核能力
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+
+  pgbouncer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.pgbouncer
+    image: ontosql-pgbouncer:latest
+    container_name: ontosql-pgbouncer
+
+    ports:
+      - "${PGBOUNCER_PORT:-6432}:6432"
+
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?err}
+
+    depends_on:
+      ontosql:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+
+    read_only: true
+    tmpfs:
+      - /var/run/pgbouncer:size=10M,mode=0700,uid=999
+
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
 # 命名数据卷：保证数据在容器重建后仍然保留
 volumes:

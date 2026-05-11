@@ -18,10 +18,11 @@
 │  ┌──────────────────┐  ┌──────────────────┐  ┌───────────────┐  │
 │  │  ontosql Schema  │  │   ag_catalog     │  │   public      │  │
 │  │  ─────────────── │  │   ─────────────  │  │   ──────────  │  │
-│  │  vertex_embedd.. │  │   ag_graph       │  │   业务数据表   │  │
-│  │  attribute_emb.. │  │   ag_label       │  │   传统查询     │  │
-│  │  obj_attr_map..  │  │   ag_vertex      │  │               │  │
-│  │  vector_registry │  │   ag_edge        │  │               │  │
+│  │  schema_version  │  │   ag_graph       │  │   业务数据表   │  │
+│  │  vector_registry │  │   ag_label       │  │   传统查询     │  │
+│  │  vertex_embedd.. │  │   ag_vertex      │  │               │  │
+│  │  attribute_emb.. │  │   ag_edge        │  │               │  │
+│  │  obj_attr_map..  │  │                  │  │               │  │
 │  │  search_*()      │  │   cypher()       │  │               │  │
 │  │  find_*()        │  │                  │  │               │  │
 │  │  upsert_*()      │  │                  │  │               │  │
@@ -187,20 +188,26 @@ Apache AGE (PGXS 标准扩展)
 ```
 客户端
   │
-  ├─── 本地连接 (Unix Socket)
-  │     认证: trust (免密)
+  ├─── 本地连接 (Unix Socket) — Makefile 开发环境
+  │     认证: peer（OS 用户身份验证，process 以 initdb 时用户运行）
+  │
+  ├─── Docker 本地连接 (Unix Socket)
+  │     认证: peer（OS 用户身份验证，process 以 postgres 用户运行）
   │
   ├─── 远程连接 (TCP)
   │     认证: md5 密码
   │     加密: 可选 SSL (编译已启用 OpenSSL)
   │
-  └─── Docker 连接
+  └─── Docker 容器安全
         端口: 5432 (通过环境变量可改)
-        安全: no-new-privileges + 资源限制
+        cap_drop: ALL（仅保留 CHOWN/DAC_OVERRIDE/SETGID/SETUID）
+        安全: no-new-privileges + 非 root 用户运行
+        密码: 必填（${POSTGRES_PASSWORD:?err}，无默认值）
 ```
 
 生产环境建议：
-- 将 `pg_hba.conf` 的 `host ... trust` 改为 `md5` 或 `scram-sha-256`
+- 已将所有入口设为 md5 密码认证（Docker 本地使用 peer）
 - 启用 SSL 连接 (`ssl = on`)
 - 使用专用非 root 用户运行 PG 进程
 - 定期更新依赖组件和扩展
+- pg_hba.conf 使用覆盖写入而非追加，确保自定义规则不会被 initdb 默认 trust 规则遮蔽（首条匹配优先原则）
