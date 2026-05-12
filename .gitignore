@@ -29,6 +29,7 @@ pg_log/
 *.tmp
 *.bak
 *.dump
+/backups/
 /tmp/
 
 # 环境变量（可能含密码）

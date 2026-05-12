@@ -1,6 +1,7 @@
 # OntoSQL
 
 > 面向「智能问数」的融合数据库 — PostgreSQL 17 + pgvector + Apache AGE
+> 全新 Agent-Oriented Architecture — 20 个标准 Skill 组件，纯 CLI/JSON 交互
 
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17.4-blue)](https://www.postgresql.org/)
 [![pgvector](https://img.shields.io/badge/pgvector-0.8.1-green)](https://github.com/pgvector/pgvector)
@@ -88,6 +89,7 @@ SELECT * FROM search_object_attribute('张三的销售额', 'ontosql_graph');
 
 ```
 ontosql/
+├── ontosql                         # 统一 CLI 入口（Agent 调用主入口）
 ├── README.md                       # 项目全貌（本文件）
 ├── Makefile                        # 顶层构建、启动、测试入口
 ├── upstream/                       # 上游源码（不做功能修改）
@@ -114,6 +116,16 @@ ontosql/
 │   ├── consistency_audit.md        #   文档一致性审计与代码审计
 │   ├── agent_guide.md              #   Agent 三步工作流对接指南
 │   └── knowledge_graph.md          #   本体图谱（Agent 按图索骥索引）
+├── specs/                          # Agent 转型规范
+│   └── skill_spec.md               #   Skill 组件设计与交互规范
+├── skills/                         # Agent Skill 组件库 (20 Skills)
+│   ├── manifest.json               #   Skill 注册与发现清单
+│   ├── lib/common.sh               #   共享库（JSON 输出/错误处理/验证）
+│   ├── lifecycle/                  #   6 个生命周期 Skill（build/start/stop/...）
+│   ├── query/                      #   6 个检索 Skill（search-*/get-*/...）
+│   ├── write/                      #   3 个写入 Skill（upsert-*/link-*）
+│   ├── ops/                        #   3 个运维 Skill（health-check/backup/apply-config）
+│   └── graph/                      #   2 个图操作 Skill
 ├── examples/                       # 使用示例
 │   └── usage.sql                   #   11 个典型场景 SQL 示例
 ├── tests/                          # 测试用例
@@ -164,12 +176,28 @@ ontosql/
 | [模块手册](docs/modules.md) | 模块功能详细说明 | 开发者 |
 | [Agent 对接指南](docs/agent_guide.md) | Agent 三步工作流对接指南 | Agent 开发者 |
 | [本体图谱](docs/knowledge_graph.md) | Agent 按图索骥索引 | Agent / 全体开发者 |
+| [Skill 规范](specs/skill_spec.md) | Skill 组件设计与交互规范 | Agent 开发者 / 架构师 |
 - [使用示例](examples/usage.sql) — 11 个典型场景示例
 - [测试用例](tests/test_cases.sql) — 24 组功能/边界/异常/安全测试
 - [数据字典](docs/data_dictionary.md) — 数据模型与函数清单
 - [对象索引](docs/object_index.md) — 核心对象关系图谱
 - [文档一致性审计](docs/consistency_audit.md) — 代码与文档一致性检查
 - [代码审查报告](docs/code_review.md) — 代码质量评估与建议
+- [Skill 清单](skills/manifest.json) — 20 个 Skill 的完整注册表
+
+### Agent 快速开始
+
+```bash
+# 列出所有可用 Skill
+./ontosql list
+
+# 查看某个 Skill 的完整元数据（输入/输出/示例）
+./ontosql info search-object-attribute
+
+# 以 JSON 方式调用 Skill（Agent 友好）
+echo '{"query_text":"张三的销售额","graph_name":"ontosql_graph"}' | \
+  ./ontosql search-object-attribute
+```
 
 ---
 

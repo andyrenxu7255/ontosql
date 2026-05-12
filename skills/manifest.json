@@ -1,0 +1,314 @@
+{
+  "version": "2.0.0",
+  "project": "OntoSQL",
+  "description": "Agent-oriented Skill catalog for OntoSQL fusion database platform",
+  "entry_point": "ontosql",
+  "skills": {
+    "lifecycle": {
+      "build": {
+        "id": "L-01",
+        "name": "build",
+        "description": "Compile PostgreSQL 17.4 + pgvector 0.8.1 + Apache AGE from source",
+        "category": "lifecycle",
+        "input_schema": {
+          "parallel_jobs": {"type": "integer", "default": 0, "description": "Number of parallel make jobs (0 = auto)"},
+          "clean_first": {"type": "boolean", "default": false, "description": "Clean build artifacts before building"}
+        },
+        "output_schema": {"status": "success|error", "data": {"components": ["postgresql","pgvector","age"]}},
+        "side_effects": ["filesystem_write"],
+        "timeout_ms": 600000
+      },
+      "init-db": {
+        "id": "L-02",
+        "name": "init-db",
+        "description": "Initialize PostgreSQL data directory with ontosql configuration",
+        "category": "lifecycle",
+        "input_schema": {
+          "force": {"type": "boolean", "default": false, "description": "Force re-initialization (destroys existing data)"},
+          "encoding": {"type": "string", "default": "UTF8", "description": "Database encoding"},
+          "locale": {"type": "string", "default": "C.UTF-8", "description": "Database locale"}
+        },
+        "output_schema": {"status": "success|error", "data": {"data_directory": "string"}},
+        "side_effects": ["filesystem_write"],
+        "timeout_ms": 30000
+      },
+      "start": {
+        "id": "L-03",
+        "name": "start",
+        "description": "Start PostgreSQL instance and create vector + age extensions",
+        "category": "lifecycle",
+        "input_schema": {
+          "wait": {"type": "boolean", "default": true, "description": "Wait for PG to be ready before returning"}
+        },
+        "output_schema": {"status": "success|error", "data": {"port": 5432, "extensions": ["vector","age"]}},
+        "side_effects": ["process_start"],
+        "timeout_ms": 30000
+      },
+      "stop": {
+        "id": "L-04",
+        "name": "stop",
+        "description": "Stop PostgreSQL instance gracefully (smart shutdown)",
+        "category": "lifecycle",
+        "input_schema": {
+          "mode": {"type": "string", "default": "smart", "enum": ["smart","fast","immediate"], "description": "Shutdown mode"}
+        },
+        "output_schema": {"status": "success|error", "data": {"stopped": true}},
+        "side_effects": ["process_stop"],
+        "timeout_ms": 30000
+      },
+      "status": {
+        "id": "L-05",
+        "name": "status",
+        "description": "Check PostgreSQL instance health and report status",
+        "category": "lifecycle",
+        "input_schema": {},
+        "output_schema": {"status": "success|error", "data": {"running": "true|false", "port": 5432, "uptime_seconds": 1234}},
+        "side_effects": [],
+        "timeout_ms": 5000
+      },
+      "clean": {
+        "id": "L-06",
+        "name": "clean",
+        "description": "Remove all build artifacts and data directories",
+        "category": "lifecycle",
+        "input_schema": {
+          "keep_data": {"type": "boolean", "default": false, "description": "Keep data directory, only clean build artifacts"}
+        },
+        "output_schema": {"status": "success|error", "data": {"cleaned": ["build/","upstream/..."]}},
+        "side_effects": ["filesystem_delete"],
+        "timeout_ms": 60000
+      }
+    },
+    "query": {
+      "search-objects": {
+        "id": "Q-01",
+        "name": "search-objects",
+        "description": "Search graph objects using vector + trigram multi-path recall",
+        "category": "query",
+        "wraps": "ontosql.search_objects()",
+        "read_only": true,
+        "input_schema": {
+          "query_text": {"type": "string", "required": true, "max_length": 1000, "description": "Natural language query"},
+          "graph_name": {"type": "string", "default": "default", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"},
+          "label": {"type": "string", "default": null, "description": "Optional vertex label filter"},
+          "top_k": {"type": "integer", "default": 10, "min": 1, "max": 100},
+          "query_embedding": {"type": "array", "default": null, "description": "1536-dim embedding vector (NULL = trigram only)"}
+        },
+        "output_schema": {"status": "success|error", "data": {"results": [{"vertex_id":0,"vertex_name":"","label_name":"","vector_score":0.0,"trigram_score":0.0,"combined_score":0.0}]}},
+        "side_effects": [],
+        "timeout_ms": 5000
+      },
+      "search-attributes": {
+        "id": "Q-02",
+        "name": "search-attributes",
+        "description": "Search metric/dimension attributes using vector + trigram multi-path recall",
+        "category": "query",
+        "wraps": "ontosql.search_attributes()",
+        "read_only": true,
+        "input_schema": {
+          "query_text": {"type": "string", "required": true, "max_length": 1000},
+          "graph_name": {"type": "string", "default": "default"},
+          "top_k": {"type": "integer", "default": 10, "min": 1, "max": 100},
+          "query_embedding": {"type": "array", "default": null}
+        },
+        "output_schema": {"status": "success|error", "data": {"results": [{"attr_name":"","attr_id":0,"description":"","vector_score":0.0,"trigram_score":0.0,"combined_score":0.0}]}},
+        "side_effects": [],
+        "timeout_ms": 5000
+      },
+      "find-objects-by-attribute": {
+        "id": "Q-03",
+        "name": "find-objects-by-attribute",
+        "description": "Find all business objects that have a given attribute (reverse lookup)",
+        "category": "query",
+        "wraps": "ontosql.find_objects_by_attribute()",
+        "read_only": true,
+        "input_schema": {
+          "attr_id": {"type": "integer", "required": true, "description": "Attribute ID from search-attributes result"},
+          "graph_name": {"type": "string", "default": "default"},
+          "top_k": {"type": "integer", "default": 20, "min": 1, "max": 200}
+        },
+        "output_schema": {"status": "success|error", "data": {"results": [{"object_vertex_id":0,"object_name":"","object_label":"","relation_type":""}]}},
+        "side_effects": [],
+        "timeout_ms": 5000
+      },
+      "search-object-attribute": {
+        "id": "Q-04",
+        "name": "search-object-attribute",
+        "description": "Joint search: identify objects AND attributes in one call, with graph-verified association",
+        "category": "query",
+        "wraps": "ontosql.search_object_attribute()",
+        "read_only": true,
+        "input_schema": {
+          "query_text": {"type": "string", "required": true, "max_length": 1000},
+          "graph_name": {"type": "string", "default": "default"},
+          "top_k": {"type": "integer", "default": 10, "min": 1, "max": 50},
+          "query_embedding": {"type": "array", "default": null}
+        },
+        "output_schema": {"status": "success|error", "data": {"results": [{"object_name":"","attr_name":"","combined_score":0.0,"is_verified":false}]}},
+        "side_effects": [],
+        "timeout_ms": 10000
+      },
+      "get-object-attributes": {
+        "id": "Q-05",
+        "name": "get-object-attributes",
+        "description": "List all attributes (columns) owned by a given object vertex",
+        "category": "query",
+        "wraps": "ontosql.get_object_attributes()",
+        "read_only": true,
+        "input_schema": {
+          "object_vertex_id": {"type": "integer", "required": true, "description": "Object vertex ID from AGE graph"},
+          "graph_name": {"type": "string", "default": "default"}
+        },
+        "output_schema": {"status": "success|error", "data": {"results": [{"attr_id":0,"attr_name":"","data_type":"","description":"","relation_type":"","confidence":0.0}]}},
+        "side_effects": [],
+        "timeout_ms": 5000
+      },
+      "get-related-objects": {
+        "id": "Q-06",
+        "name": "get-related-objects",
+        "description": "Graph traversal: find all objects related to a given vertex via AGE Cypher",
+        "category": "query",
+        "wraps": "ontosql.get_related_objects()",
+        "read_only": true,
+        "input_schema": {
+          "vertex_id": {"type": "integer", "required": true, "description": "Source vertex ID"},
+          "graph_name": {"type": "string", "default": "ontosql_graph"},
+          "relation_type": {"type": "string", "default": null, "description": "Optional relation filter (BELONGS_TO|HAS_METRIC|HAS_DIMENSION|RELATED_TO)"}
+        },
+        "output_schema": {"status": "success|error", "data": {"results": [{"related_vertex_id":0,"related_name":"","related_label":"","relation_type":""}]}},
+        "side_effects": [],
+        "timeout_ms": 10000
+      }
+    },
+    "write": {
+      "upsert-vertex": {
+        "id": "W-01",
+        "name": "upsert-vertex",
+        "description": "Insert or update a vertex (business object) embedding vector",
+        "category": "write",
+        "wraps": "ontosql.upsert_vertex_embedding()",
+        "read_only": false,
+        "idempotent": true,
+        "input_schema": {
+          "vertex_id": {"type": "integer", "required": true, "description": "AGE graph vertex ID (graphid)"},
+          "graph_name": {"type": "string", "required": true},
+          "label_name": {"type": "string", "required": true, "description": "Vertex label (Object, Department, Metric, ...)"},
+          "vertex_name": {"type": "string", "required": true, "description": "Business name for display"},
+          "embedding": {"type": "array", "required": true, "description": "1536-dim vector"},
+          "description": {"type": "string", "default": null, "description": "Semantic description"},
+          "metadata": {"type": "object", "default": {}, "description": "Extended JSON metadata (business_table, join_key, etc.)"}
+        },
+        "output_schema": {"status": "success|error", "data": {"vertex_id": 0, "action": "inserted|updated"}},
+        "side_effects": ["database_write"],
+        "timeout_ms": 5000
+      },
+      "upsert-attribute": {
+        "id": "W-02",
+        "name": "upsert-attribute",
+        "description": "Insert or update an attribute (metric/dimension) embedding vector",
+        "category": "write",
+        "wraps": "ontosql.upsert_attribute_embedding()",
+        "read_only": false,
+        "idempotent": true,
+        "input_schema": {
+          "attr_name": {"type": "string", "required": true, "description": "Attribute business name (e.g. 销售额)"},
+          "graph_name": {"type": "string", "required": true},
+          "embedding": {"type": "array", "required": true, "description": "1536-dim vector"},
+          "attr_vertex_id": {"type": "integer", "default": null, "description": "AGE graph vertex ID if attribute is also a vertex"},
+          "aliases": {"type": "array", "default": null, "description": "Synonym aliases for recall improvement"},
+          "description": {"type": "string", "default": null},
+          "data_type": {"type": "string", "default": null, "description": "Data type (numeric, integer, text, ...)"}
+        },
+        "output_schema": {"status": "success|error", "data": {"attr_id": 0, "action": "inserted|updated"}},
+        "side_effects": ["database_write"],
+        "timeout_ms": 5000
+      },
+      "link-object-attribute": {
+        "id": "W-03",
+        "name": "link-object-attribute",
+        "description": "Create association between an object vertex and an attribute",
+        "category": "write",
+        "wraps": "ontosql.link_object_attribute()",
+        "read_only": false,
+        "idempotent": true,
+        "input_schema": {
+          "graph_name": {"type": "string", "required": true},
+          "object_vertex_id": {"type": "integer", "required": true, "description": "Object vertex ID (must exist in vertex_embeddings)"},
+          "attr_id": {"type": "integer", "required": true, "description": "Attribute ID from upsert-attribute result (must exist in attribute_embeddings)"},
+          "relation_type": {"type": "string", "default": "HAS_ATTRIBUTE"},
+          "confidence": {"type": "float", "default": 1.0, "min": 0.0, "max": 1.0}
+        },
+        "output_schema": {"status": "success|error", "data": {"linked": true}},
+        "side_effects": ["database_write"],
+        "timeout_ms": 5000
+      }
+    },
+    "ops": {
+      "health-check": {
+        "id": "O-01",
+        "name": "health-check",
+        "description": "Deep health probe: PostgreSQL connectivity + extension availability + basic query latency",
+        "category": "ops",
+        "input_schema": {},
+        "output_schema": {"status": "success|error", "data": {"pg_ready": true, "extensions": {"vector": true, "age": true, "pg_trgm": true}, "query_latency_ms": 5}},
+        "side_effects": [],
+        "timeout_ms": 10000
+      },
+      "backup": {
+        "id": "O-02",
+        "name": "backup",
+        "description": "Perform logical backup using pg_dump",
+        "category": "ops",
+        "input_schema": {
+          "output_dir": {"type": "string", "default": "./backups", "description": "Backup output directory"},
+          "compress": {"type": "boolean", "default": true, "description": "Compress backup with gzip"}
+        },
+        "output_schema": {"status": "success|error", "data": {"backup_file": "string", "size_bytes": 12345}},
+        "side_effects": ["filesystem_write"],
+        "timeout_ms": 300000
+      },
+      "apply-config": {
+        "id": "O-03",
+        "name": "apply-config",
+        "description": "Apply PostgreSQL performance configuration from template",
+        "category": "ops",
+        "input_schema": {
+          "config_file": {"type": "string", "default": null, "description": "Path to config SQL template (default: config/postgresql.template.sql)"},
+          "dry_run": {"type": "boolean", "default": false, "description": "Show what would be applied without executing"}
+        },
+        "output_schema": {"status": "success|error", "data": {"params_applied": 24, "needs_reload": true}},
+        "side_effects": ["database_config_write"],
+        "timeout_ms": 10000
+      }
+    },
+    "graph": {
+      "load-knowledge-graph": {
+        "id": "G-01",
+        "name": "load-knowledge-graph",
+        "description": "Load the example knowledge graph (ontosql_graph) with vertices, edges, and sample data",
+        "category": "graph",
+        "input_schema": {
+          "graph_name": {"type": "string", "default": "ontosql_graph", "description": "Target graph name"},
+          "drop_existing": {"type": "boolean", "default": false, "description": "Drop existing graph before loading"}
+        },
+        "output_schema": {"status": "success|error", "data": {"vertices": 24, "edges": 30, "labels": ["Object","Metric","Dimension","Department"]}},
+        "side_effects": ["database_write"],
+        "timeout_ms": 30000
+      },
+      "cypher-query": {
+        "id": "G-02",
+        "name": "cypher-query",
+        "description": "Execute an openCypher query against the AGE graph",
+        "category": "graph",
+        "input_schema": {
+          "graph_name": {"type": "string", "required": true, "description": "Target AGE graph name"},
+          "cypher": {"type": "string", "required": true, "description": "OpenCypher query (e.g. MATCH (n:Object) RETURN n.name)"},
+          "return_columns": {"type": "array", "default": ["result agtype"], "description": "Column definitions for cypher() RETURN clause"}
+        },
+        "output_schema": {"status": "success|error", "data": {"results": [], "row_count": 0}},
+        "side_effects": [],
+        "timeout_ms": 30000
+      }
+    }
+  }
+}

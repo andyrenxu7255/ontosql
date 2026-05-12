@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# ============================================================================
+# OntoSQL Agent-Oriented CLI Gateway
+# ============================================================================
+# Unified entry point for all Agent Skills.
+# Usage:
+#   ontosql <skill-name> [--input '<json>'] [--file <path>]
+#   ontosql list|info|manifest
+#   cat input.json | ontosql <skill-name>
+# ============================================================================
+set -euo pipefail
+
+export ONTOSQL_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# ----------------------------------------------------------------------------
+# Built-in Commands
+# ----------------------------------------------------------------------------
+
+cmd_list() {
+    echo '{"skills":['
+    first=true
+    for category_dir in "${ONTOSQL_ROOT}/skills/"*/; do
+        category=$(basename "${category_dir}")
+        [[ "${category}" == "lib" ]] && continue
+        for skill_file in "${category_dir}"*.sh; do
+            [[ ! -f "${skill_file}" ]] && continue
+            skill_name=$(basename "${skill_file}" .sh)
+            desc=$(grep -m1 '^# ' "${skill_file}" 2>/dev/null | sed 's/^# //' || echo "${skill_name}")
+            ${first} || echo ','
+            echo -n "  {\"name\":\"${skill_name}\",\"category\":\"${category}\",\"path\":\"skills/${category}/${skill_name}.sh\"}"
+            first=false
+        done
+    done
+    echo ''
+    echo ']}'
+}
+
+cmd_info() {
+    local skill_name="${1:-}"
+    if [[ -z "${skill_name}" ]]; then
+        echo '{"status":"error","error":{"code":"ERR_INPUT_EMPTY","message":"Usage: ontosql info <skill-name>"}}'
+        exit 1
+    fi
+    local found=false
+    for category_dir in "${ONTOSQL_ROOT}/skills/"*/; do
+        category=$(basename "${category_dir}")
+        [[ "${category}" == "lib" ]] && continue
+        local skill_file="${category_dir}${skill_name}.sh"
+        if [[ -f "${skill_file}" ]]; then
+            found=true
+            break
+        fi
+    done
+    if ! ${found}; then
+        echo "{\"status\":\"error\",\"error\":{\"code\":\"ERR_SKILL_NOT_FOUND\",\"message\":\"Skill not found: ${skill_name}\"}}"
+        exit 4
+    fi
+    python3 <<PYEOF
+import json
+with open('${ONTOSQL_ROOT}/skills/manifest.json') as f:
+    m = json.load(f)
+for cat_name, skills in m.get('skills', {}).items():
+    for name, meta in skills.items():
+        if name == '${skill_name}':
+            meta['category'] = cat_name
+            print(json.dumps(meta, indent=2))
+            exit(0)
+print(json.dumps({"error": "metadata not found in manifest for ${skill_name}"}))
+PYEOF
+}
+
+cmd_manifest() {
+    cat "${ONTOSQL_ROOT}/skills/manifest.json"
+}
+
+# ----------------------------------------------------------------------------
+# Dispatch to Skill
+# ----------------------------------------------------------------------------
+
+dispatch_skill() {
+    local skill_name="$1"
+    shift
+
+    local found=false
+    for category_dir in "${ONTOSQL_ROOT}/skills/"*/; do
+        category=$(basename "${category_dir}")
+        [[ "${category}" == "lib" ]] && continue
+        local skill_file="${category_dir}${skill_name}.sh"
+        if [[ -f "${skill_file}" ]]; then
+            found=true
+            exec bash "${skill_file}" "$@"
+        fi
+    done
+
+    if ! ${found}; then
+        echo "{\"status\":\"error\",\"skill\":\"${skill_name}\",\"error\":{\"code\":\"ERR_SKILL_NOT_FOUND\",\"message\":\"Skill '${skill_name}' not found. Use 'ontosql list' to see available skills.\"}}"
+        exit 4
+    fi
+}
+
+# ----------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------
+
+main() {
+    if [[ $# -eq 0 ]]; then
+        echo '{"status":"error","error":{"code":"ERR_INPUT_EMPTY","message":"Usage: ontosql <skill-name> | list | info <name> | manifest"}}'
+        exit 1
+    fi
+
+    local command="$1"
+    shift
+
+    case "${command}" in
+        list)     cmd_list ;;
+        info)     cmd_info "$@" ;;
+        manifest) cmd_manifest ;;
+        --help|-h)
+            echo "OntoSQL Agent-Oriented CLI Gateway v2.0.0"
+            echo ""
+            echo "Usage:"
+            echo "  ontosql list                 List all available skills"
+            echo "  ontosql info <skill-name>    Show skill metadata"
+            echo "  ontosql manifest             Output full manifest.json"
+            echo "  ontosql <skill-name> --input '<json>'   Execute a skill"
+            echo "  cat input.json | ontosql <skill-name>   Pipe JSON input"
+            echo ""
+            echo "Exit codes: 0=success, 1=client error, 2=server error, 3=config error, 4=not found"
+            ;;
+        *) dispatch_skill "${command}" "$@" ;;
+    esac
+}
+
+main "$@"

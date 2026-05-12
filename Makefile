@@ -153,7 +153,10 @@ docs:
 	@echo "  docs/consistency_audit.md - Consistency audit report"
 	@echo "  docs/agent_guide.md      - Agent integration guide"
 	@echo "  docs/knowledge_graph.md  - Ontology graph (agent-oriented)"
+	@echo "  specs/skill_spec.md      - Skill specification (agent-oriented)"
+	@echo "  skills/manifest.json     - Skill registry (agent discovery)"
 	@echo "  examples/usage.sql       - Usage examples"
+	@echo "  ontosql list             - List all available skills"
 
 # ----------------------------------------------------------------------------
 # psql — 快速进入数据库交互终端
