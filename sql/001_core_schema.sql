@@ -117,10 +117,13 @@ CREATE INDEX IF NOT EXISTS idx_attribute_embeddings_name_trgm
     ON attribute_embeddings USING gin (attr_name gin_trgm_ops);
 
 -- ============================================================================
--- 6. 对象-属性关联表 — 记录对象拥有的属性
+-- 6. 对象-属性关联表 — 图关系的物化缓存
 -- ============================================================================
--- 用途：物化对象与属性的关联关系，加速反查（find_objects_by_attribute）和关联验证（is_verified）
--- 来源：可从 AGE 图中自动派生（MATCH (obj)-[:HAS_METRIC]->(metric)），也可手动维护
+-- 用途：物化 AGE 图中的对象-属性关联关系，作为图遍历的读优化缓存
+-- 权威来源：AGE 图（Object -[:HAS_METRIC]-> Metric 等边），本表是图的物化镜像
+-- 同步机制：link_object_attribute() 同时写入本表 + 在 AGE 图中创建对应边
+-- 验证策略：search_object_attribute() 优先用 Cypher 查图验证 is_verified，
+--           仅当属性未建模为图顶点（attr_vertex_id IS NULL）时回退查本表
 -- 置信度：confidence 字段支持概率化的关联（如 NLP 推断的关联可能 < 1.0）
 
 CREATE TABLE IF NOT EXISTS object_attribute_mapping (
@@ -148,8 +151,8 @@ CREATE INDEX IF NOT EXISTS idx_oam_attr
 
 INSERT INTO vector_registry (table_name, graph_name, entity_type, label_or_type, vector_column, vector_dim, index_type, distance_ops)
 VALUES
-    ('vertex_embeddings',   'default', 'vertex',    'ALL',    'embedding', 1536, 'hnsw', 'vector_cosine_ops'),
-    ('attribute_embeddings','default', 'attribute', 'ALL',    'embedding', 1536, 'hnsw', 'vector_cosine_ops')
+    ('vertex_embeddings',   'ontosql_graph', 'vertex',    'ALL',    'embedding', 1536, 'hnsw', 'vector_cosine_ops'),
+    ('attribute_embeddings','ontosql_graph', 'attribute', 'ALL',    'embedding', 1536, 'hnsw', 'vector_cosine_ops')
 ON CONFLICT (table_name) DO NOTHING;
 
 -- ============================================================================
@@ -220,7 +223,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION search_objects(
     query_text          text,                   -- NL 查询文本（如 "张三"）
-    p_graph_name        text DEFAULT 'default', -- 目标图名
+    p_graph_name        text DEFAULT 'ontosql_graph', -- 目标图名
     p_label             text DEFAULT NULL,      -- 可选标签过滤（如 'Object'）
     p_top_k             int  DEFAULT 10,        -- 返回结果数量
     p_query_embedding   vector DEFAULT NULL     -- 查询文本的 embedding 向量（由外部模型生成）
@@ -289,7 +292,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION search_attributes(
     query_text          text,                   -- NL 查询文本
-    p_graph_name        text DEFAULT 'default', -- 目标图名
+    p_graph_name        text DEFAULT 'ontosql_graph', -- 目标图名
     p_top_k             int  DEFAULT 10,        -- 返回结果数量
     p_query_embedding   vector DEFAULT NULL     -- 查询文本的 embedding 向量
 ) RETURNS TABLE(
@@ -378,7 +381,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION find_objects_by_attribute(
     p_attr_id       int,                    -- 属性 ID（来自 search_attributes 结果）
-    p_graph_name    text DEFAULT 'default', -- 目标图名
+    p_graph_name    text DEFAULT 'ontosql_graph', -- 目标图名（find_objects）
     p_top_k         int  DEFAULT 20         -- 返回结果数量上限
 ) RETURNS TABLE(
     object_vertex_id bigint,     -- 对象顶点 ID
@@ -409,23 +412,25 @@ $$;
 -- ----------------------------------------------------------------------------
 -- 8.4 search_object_attribute — 联合检索（核心接口）
 -- ----------------------------------------------------------------------------
--- 功能：一次调用同时识别 NL 查询中的对象和属性，并验证它们之间是否存在关联（is_verified）
+-- 功能：一次调用同时识别 NL 查询中的对象和属性，并通过 AGE 图验证关联（is_verified）
 -- 算法：
 --   1. 调用 search_objects() 获取候选对象（2×扩容）
 --   2. 调用 search_attributes() 获取候选属性（2×扩容）
 --   3. CROSS JOIN 生成候选对（笛卡尔积）
---   4. 查询 object_attribute_mapping 判断每个对象-属性对是否有真实关联
---   5. 综合分 = 0.5×对象分 + 0.5×属性分
+--   4. 优先用 AGE 图验证：对已建模为图顶点的属性（attr_vertex_id 非空），
+--      通过 Cypher 查 Object -[edge]-> Metric 判断关联是否存在
+--   5. 属性未建模为图顶点时（attr_vertex_id IS NULL），回退查 object_attribute_mapping
+--   6. 综合分 = 0.5×对象分 + 0.5×属性分
 -- 优势：一次 SQL 调用完成对象识别 + 属性识别 + 关联验证，减少网络往返
 -- 注意：CROSS JOIN 可能产生 O(obj_count × attr_count) 候选对，需要合理控制 p_top_k
 --       p_top_k 建议不超过 50（超过此值时内部自动截断扩容因子避免笛卡尔积爆炸）
 -- ----------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION search_object_attribute(
-    query_text          text,                   -- NL 查询文本
-    p_graph_name        text DEFAULT 'default', -- 目标图名
-    p_top_k             int  DEFAULT 10,        -- 返回结果数量
-    p_query_embedding   vector DEFAULT NULL     -- 查询文本的 embedding 向量
+    query_text          text,                         -- NL 查询文本
+    p_graph_name        text DEFAULT 'ontosql_graph', -- 目标图名
+    p_top_k             int  DEFAULT 10,              -- 返回结果数量
+    p_query_embedding   vector DEFAULT NULL           -- 查询文本的 embedding 向量
 ) RETURNS TABLE(
     object_vertex_id bigint,     -- 对象顶点 ID
     object_name      text,       -- 对象名称
@@ -435,19 +440,56 @@ CREATE OR REPLACE FUNCTION search_object_attribute(
     obj_score        float,      -- 对象匹配分（search_objects 的综合分）
     attr_score       float,      -- 属性匹配分（search_attributes 的综合分）
     combined_score   float,      -- 联合综合分 [0, 1]
-    is_verified      boolean     -- 图结构是否确认此对象-属性关联（true = 可靠，false = 需排除）
+    is_verified      boolean     -- AGE 图确认此对象-属性关联（true = 可靠，false = 需排除）
 ) LANGUAGE plpgsql STABLE PARALLEL SAFE AS $$
+DECLARE
+    v_obj_ids text;    -- 候选对象 vertex_id 列表，用于 Cypher IN 子句
+    v_attr_ids text;   -- 候选属性 attr_vertex_id 列表（已建模为图顶点的）
+    v_cypher text;     -- 动态拼接的 Cypher 查询
 BEGIN
     PERFORM validate_query_text(query_text);
     PERFORM validate_graph_name(p_graph_name);
     PERFORM validate_top_k(p_top_k);
 
+    -- 收集候选对象的 vertex_id（用于后续 Cypher IN 子句）
+    SELECT string_agg(DISTINCT so.vertex_id::text, ',')
+    INTO v_obj_ids
+    FROM search_objects(query_text, p_graph_name, NULL, LEAST(p_top_k * 2, 50), p_query_embedding) AS so;
+
+    -- 收集已建模为图顶点的候选属性的 attr_vertex_id
+    SELECT string_agg(DISTINCT ae.attr_vertex_id::text, ',')
+    INTO v_attr_ids
+    FROM search_attributes(query_text, p_graph_name, LEAST(p_top_k * 2, 50), p_query_embedding) AS sa
+    JOIN attribute_embeddings ae ON ae.id = sa.attr_id
+    WHERE ae.graph_name = p_graph_name AND ae.attr_vertex_id IS NOT NULL;
+
+    -- 构建图验证 Cypher：批量查出所有在图中实际存在的对象-属性边
+    -- 图关系：Object -[:HAS_METRIC]-> Metric（及其他 Object→属性 的出边）
+    IF v_obj_ids IS NOT NULL AND v_obj_ids != '' AND v_attr_ids IS NOT NULL AND v_attr_ids != '' THEN
+        v_cypher := format(
+            'MATCH (obj:Object)-[r]->(prop) '
+            'WHERE id(obj) IN [%s] AND id(prop) IN [%s] '
+            'RETURN id(obj), id(prop), type(r)',
+            v_obj_ids, v_attr_ids
+        );
+    END IF;
+
     RETURN QUERY
     WITH objs AS MATERIALIZED (
         SELECT * FROM search_objects(query_text, p_graph_name, NULL, LEAST(p_top_k * 2, 50), p_query_embedding)
     ),
-    attrs AS MATERIALIZED (
-        SELECT * FROM search_attributes(query_text, p_graph_name, LEAST(p_top_k * 2, 50), p_query_embedding)
+    attrs_with_vid AS (
+        SELECT sa.*, ae.attr_vertex_id
+        FROM search_attributes(query_text, p_graph_name, LEAST(p_top_k * 2, 50), p_query_embedding) AS sa
+        JOIN attribute_embeddings ae ON ae.id = sa.attr_id
+        WHERE ae.graph_name = p_graph_name
+    ),
+    -- 从 AGE 图批量查验证结果（仅对建模为图顶点的属性）
+    graph_verified AS (
+        SELECT (v.obj_id)::bigint AS obj_vid,
+               (v.prop_id)::bigint AS prop_vid
+        FROM cypher(p_graph_name, v_cypher) AS v(obj_id agtype, prop_id agtype, rel_type agtype)
+        WHERE v_cypher IS NOT NULL
     )
     SELECT
         o.vertex_id, o.vertex_name, o.label_name,
@@ -455,14 +497,21 @@ BEGIN
         o.combined_score AS obj_score,
         a.combined_score  AS attr_score,
         (o.combined_score * 0.5 + a.combined_score * 0.5) AS combined_score,
-        EXISTS (
-            SELECT 1 FROM object_attribute_mapping oam
-            WHERE oam.graph_name = p_graph_name
-              AND oam.object_vertex_id = o.vertex_id
-              AND oam.attr_id = a.attr_id
-        ) AS is_verified                     -- EXISTS 子查询检查物化关联表
+        -- 验证策略：
+        --   属性已建模为图顶点 → 用 Cypher 查图验证（graph_verified）
+        --   属性未建模为图顶点 → 回退查 object_attribute_mapping 物化表
+        CASE
+            WHEN a.attr_vertex_id IS NOT NULL THEN
+                EXISTS (SELECT 1 FROM graph_verified gv
+                        WHERE gv.obj_vid = o.vertex_id AND gv.prop_vid = a.attr_vertex_id)
+            ELSE
+                EXISTS (SELECT 1 FROM object_attribute_mapping oam
+                        WHERE oam.graph_name = p_graph_name
+                          AND oam.object_vertex_id = o.vertex_id
+                          AND oam.attr_id = a.attr_id)
+        END AS is_verified
     FROM objs o
-    CROSS JOIN attrs a                       -- 笛卡尔积生成所有候选对
+    CROSS JOIN attrs_with_vid a
     ORDER BY combined_score DESC
     LIMIT p_top_k;
 END;
@@ -479,7 +528,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION get_object_attributes(
     p_object_vertex_id  bigint,                  -- 对象顶点 ID（来自 search_objects 结果）
-    p_graph_name        text DEFAULT 'default'   -- 目标图名（与其他检索函数默认值保持一致）
+    p_graph_name        text DEFAULT 'ontosql_graph'   -- 目标图名（与其他检索函数默认值保持一致）
 ) RETURNS TABLE(
     attr_id         int,         -- 属性 ID
     attr_name       text,        -- 属性名称（如 "销售额"）
@@ -670,13 +719,18 @@ END;
 $$;
 
 -- ----------------------------------------------------------------------------
--- 9.3 link_object_attribute — 建立对象-属性关联
+-- 9.3 link_object_attribute — 建立对象-属性关联（同时写映射表 + AGE 图）
 -- ----------------------------------------------------------------------------
--- 功能：将对象（vertex_id）与属性（attr_id）建立关联，写入 object_attribute_mapping 表
--- 行为：ON CONFLICT DO UPDATE（支持重复调用，幂等）
+-- 功能：将对象（vertex_id）与属性（attr_id）建立关联
+-- 行为：
+--   1. 写入 object_attribute_mapping 物化表（ON CONFLICT DO UPDATE，支持幂等）
+--   2. 若属性已建模为图顶点（attr_vertex_id 非空），同步在 AGE 图中创建边：
+--      Object -[:HAS_METRIC]-> Metric（根据 relation_type 映射）
 -- 安全：
 --   1. 校验 vertex_id 在 vertex_embeddings 中存在（防止关联不存在的对象）
 --   2. 校验 attr_id 在 attribute_embeddings 中存在（防止关联不存在的属性）
+--   3. 校验 p_relation_type 为预定义有效值，防止 Cypher 注入
+--   4. AGE 图边创建使用 MERGE（幂等，不产生重复边）
 -- 异常：校验失败时抛出 EXCEPTION，调用方应捕获处理
 -- ----------------------------------------------------------------------------
 
@@ -684,16 +738,26 @@ CREATE OR REPLACE FUNCTION link_object_attribute(
     p_graph_name        text,                          -- 图名
     p_object_vertex_id  bigint,                       -- 对象顶点 ID
     p_attr_id           int,                          -- 属性 ID
-    p_relation_type     text DEFAULT 'HAS_ATTRIBUTE', -- 关联关系类型
+    p_relation_type     text DEFAULT 'HAS_METRIC',    -- 关联关系类型（映射到 AGE 图边标签）
     p_confidence        float DEFAULT 1.0             -- 置信度 [0, 1]（NLP 推断关联可 < 1.0）
 ) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
     v_label text;
+    v_attr_vertex_id bigint;
+    v_edge_label text;
+    v_cypher text;
+    v_valid_relations text[] := ARRAY['HAS_METRIC', 'BELONGS_TO', 'HAS_DIMENSION', 'RELATED_TO', 'HAS_ATTRIBUTE'];
 BEGIN
     PERFORM validate_graph_name(p_graph_name);
 
     IF p_confidence < 0 OR p_confidence > 1 THEN
         RAISE EXCEPTION 'p_confidence must be between 0 and 1, got %', p_confidence;
+    END IF;
+
+    -- 校验 p_relation_type：必须是白名单中的预定义值，防止 Cypher 注入
+    IF NOT (p_relation_type = ANY(v_valid_relations)) THEN
+        RAISE EXCEPTION 'Invalid p_relation_type: "%". Allowed values: %',
+            p_relation_type, array_to_string(v_valid_relations, ', ');
     END IF;
 
     -- 校验：vertex_id 必须在 vertex_embeddings 中存在
@@ -706,15 +770,15 @@ BEGIN
     END IF;
 
     -- 校验：attr_id 必须在 attribute_embeddings 中存在，且属于同一图
-    IF NOT EXISTS (
-        SELECT 1 FROM attribute_embeddings
-        WHERE id = p_attr_id AND graph_name = p_graph_name
-    ) THEN
+    SELECT attr_vertex_id INTO v_attr_vertex_id
+    FROM attribute_embeddings
+    WHERE id = p_attr_id AND graph_name = p_graph_name;
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'attr_id=% not found in attribute_embeddings for graph=%',
             p_attr_id, p_graph_name;
     END IF;
 
-    -- 写入：重复插入时更新 relation_type 和 confidence
+    -- 写入映射表：重复插入时更新 relation_type 和 confidence
     INSERT INTO object_attribute_mapping
         (graph_name, object_vertex_id, object_label, attr_id, relation_type, confidence)
     VALUES
@@ -722,6 +786,31 @@ BEGIN
     ON CONFLICT (graph_name, object_vertex_id, attr_id) DO UPDATE SET
         relation_type = EXCLUDED.relation_type,
         confidence    = EXCLUDED.confidence;
+
+    -- 若属性已建模为图顶点（attr_vertex_id 非空），同步在 AGE 图中创建边
+    -- 图关系定义：Object -[HAS_METRIC]-> Metric, Object -[BELONGS_TO]-> Department, ...
+    -- 使用 MERGE 确保幂等（重复调用不产生重复边）
+    IF v_attr_vertex_id IS NOT NULL THEN
+        -- 将 relation_type 映射到 AGE 图边标签：
+        -- HAS_ATTRIBUTE → HAS_METRIC（默认映射），其他关系直接用原标签
+        v_edge_label := CASE p_relation_type
+            WHEN 'HAS_ATTRIBUTE' THEN 'HAS_METRIC'
+            ELSE p_relation_type
+        END;
+
+        -- 使用 id() 精确定位顶点，避免 MATCH (obj), (prop) 全图扫描
+        -- MERGE 确保边不重复：已存在则复用，不存在则创建
+        v_cypher := format(
+            'MATCH (obj) WHERE id(obj) = %s '
+            'MATCH (prop) WHERE id(prop) = %s '
+            'MERGE (obj)-[:%s]->(prop)',
+            p_object_vertex_id::text,
+            v_attr_vertex_id::text,
+            v_edge_label
+        );
+
+        PERFORM cypher(p_graph_name, v_cypher);
+    END IF;
 END;
 $$;
 

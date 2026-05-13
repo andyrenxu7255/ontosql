@@ -138,11 +138,11 @@ object_attribute_mapping.attr_id
                     ┌──────────────────┼──────────────────┐
                     ▼                  ▼                   ▼
         ┌──────────────────┐ ┌──────────────────┐ ┌───────────────────────────┐
-        │ search_objects() │ │search_attributes()│ │ object_attribute_mapping  │
-        │──────────────────│ │──────────────────│ │  (EXISTS 验证)            │
+        │ search_objects() │ │search_attributes()│ │ AGE 图 Cypher 验证        │
+        │──────────────────│ │──────────────────│ │  (MATCH Object-[r]->prop) │
         │ 向量召回(HNSW)   │ │ 向量召回(HNSW)   │ │                           │
         │ + trigram(GIN)  │ │ + trigram(GIN)   │ │ 判断 is_verified          │
-        │ → UNION ALL     │ │ → UNION ALL      │ │                           │
+        │ → UNION ALL     │ │ → UNION ALL      │ │ 属性无图顶点 → mapping表  │
         │ → GROUP BY MAX  │ │ → GROUP BY MAX   │ └───────────────────────────┘
         └────────┬─────────┘ └────────┬─────────┘
                  │                    │
@@ -214,12 +214,16 @@ object_attribute_mapping.attr_id
 │  └────────────────────────────┬────────────────────────────────┘  │
 │                               │ 候选属性列表                       │
 │  ┌────────────────────────────▼────────────────────────────────┐  │
-│  │ Step 3: CROSS JOIN + 关联验证                                │  │
-│  │   候选对象 × 候选属性                                         │  │
-│  │     └─ EXISTS (SELECT 1 FROM object_attribute_mapping       │  │
-│  │                WHERE vertex_id=o.vertex_id AND attr_id=a.id) │  │
+│  │ Step 3: AGE 图 Cypher 批量验证（按图索骥）                  │  │
+│  │   MATCH (obj:Object)-[r]->(prop)                            │  │
+│  │   WHERE id(obj) IN [候选对象] AND id(prop) IN [候选属性]    │  │
+│  │   → 返回图中实际存在的对象-属性边                            │  │
+│  │                                                              │  │
+│  │   CROSS JOIN + LEFT JOIN 图验证结果                          │  │
 │  │   综合分 = 0.5×obj_score + 0.5×attr_score                    │  │
 │  │   输出: [(vertex_id, name, attr_name, score, is_verified)]   │  │
+│  │                                                              │  │
+│  │   属性未建模为图顶点时 → 回退查 object_attribute_mapping     │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 │                                                                    │
 └───────────────────────────────┬────────────────────────────────────┘

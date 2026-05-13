@@ -90,10 +90,10 @@ ontosql/
     │
     └─→ ontosql.search_object_attribute()
         ├─ 交叉组合候选对象 × 候选属性
-        ├─ 查询 object_attribute_mapping 验证关联
+        ├─ AGE 图 Cypher 批量验证关联（按图索骥）
         └─ 返回 {is_verified: true/false} 结果
             │
-            └─→ AGE Cypher 查询获取实际数据
+            └─→ 图结构定位：Object → Metric → Dimension 精准找到属性字段
 ```
 
 ## 文档索引

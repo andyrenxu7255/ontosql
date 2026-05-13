@@ -7,7 +7,7 @@ require_pg
 START_MS=$(python3 -c 'import time; print(int(time.time()*1000))')
 
 query_text=$(json_get_raw "query_text" "")
-graph_name=$(json_get "graph_name" "default")
+graph_name=$(json_get "graph_name" "ontosql_graph")
 label=$(json_get_raw "label" "null")
 top_k=$(json_get "top_k" "10")
 query_embedding_raw=$(json_get_raw "query_embedding" "null")

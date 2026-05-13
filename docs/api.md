@@ -56,7 +56,7 @@ CREATE EXTENSION IF NOT EXISTS age;
 ```sql
 FUNCTION search_objects(
     query_text          text,           -- NL 查询文本
-    p_graph_name        text DEFAULT 'default',  -- 图名
+    p_graph_name        text DEFAULT 'ontosql_graph',  -- 图名
     p_label             text DEFAULT NULL,       -- 可选：按标签过滤
     p_top_k             int  DEFAULT 10,         -- 返回结果数
     p_query_embedding   vector DEFAULT NULL      -- 可选：查询向量，NULL时仅trigram
@@ -114,7 +114,7 @@ SELECT * FROM search_objects('张三', 'ontosql_graph');
 ```sql
 FUNCTION search_attributes(
     query_text          text,           -- NL 查询文本
-    p_graph_name        text DEFAULT 'default',  -- 图名
+    p_graph_name        text DEFAULT 'ontosql_graph',  -- 图名
     p_top_k             int  DEFAULT 10,         -- 返回结果数
     p_query_embedding   vector DEFAULT NULL      -- 可选：查询向量，NULL时仅trigram
 ) RETURNS TABLE(
@@ -153,13 +153,13 @@ SELECT * FROM search_attributes('销售额', 'ontosql_graph');
 ```sql
 FUNCTION find_objects_by_attribute(
     p_attr_id    int,            -- 属性 ID（来自 search_attributes 结果）
-    p_graph_name text DEFAULT 'default',
+    p_graph_name text DEFAULT 'ontosql_graph',
     p_top_k      int  DEFAULT 20
 ) RETURNS TABLE(
     object_vertex_id bigint,     -- 对象顶点 ID
     object_name      text,       -- 对象名称
     object_label     text,       -- 对象标签
-    relation_type    text        -- 关系类型（如 HAS_ATTRIBUTE）
+    relation_type    text        -- 关系类型（如 HAS_METRIC）
 )
 ```
 
@@ -186,14 +186,14 @@ SELECT * FROM find_objects_by_attribute(1, 'ontosql_graph');
 
 ### 5.1 search_object_attribute
 
-**核心接口**：一次调用同时识别 NL 查询中的对象和属性，并验证它们之间是否存在关联。
+**核心接口**：一次调用同时识别 NL 查询中的对象和属性，并通过 AGE 图验证它们之间是否存在关联（Object -[:HAS_METRIC]-> Metric 等边）。
 
 #### 函数签名
 
 ```sql
 FUNCTION search_object_attribute(
     query_text          text,           -- NL 查询文本
-    p_graph_name        text DEFAULT 'default',
+    p_graph_name        text DEFAULT 'ontosql_graph',
     p_top_k             int  DEFAULT 10,
     p_query_embedding   vector DEFAULT NULL  -- 可选：查询向量
 ) RETURNS TABLE(
@@ -237,7 +237,7 @@ SELECT * FROM search_object_attribute('张三的销售额', 'ontosql_graph');
 ```sql
 FUNCTION get_object_attributes(
     p_object_vertex_id  bigint,                  -- 对象顶点 ID
-    p_graph_name        text DEFAULT 'default'   -- 目标图名（与其他函数一致）
+    p_graph_name        text DEFAULT 'ontosql_graph'   -- 目标图名（与其他函数一致）
 ) RETURNS TABLE(
     attr_id         int,         -- 属性 ID
     attr_name       text,        -- 属性名称

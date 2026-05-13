@@ -120,7 +120,7 @@
 
 | 检查项 | 文档要求 | 代码实现 | 结果 |
 |--------|---------|---------|------|
-| 默认 graph_name | 'default'（与其他函数一致） | DEFAULT 'default' | ✓ |
+| 默认 graph_name | 'ontosql_graph'（与 AGE 图名一致） | DEFAULT 'ontosql_graph' | ✓ |
 | 输入校验 | graph_name 正则 + 长度 | PERFORM validate_graph_name() | ✓ |
 | JOIN 逻辑 | oam JOIN attribute_embeddings | 正确 | ✓ |
 | 排序 | 按 confidence DESC | ORDER BY oam.confidence DESC | ✓ |

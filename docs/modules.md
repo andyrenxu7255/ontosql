@@ -68,15 +68,15 @@ OntoSQL 项目
 | **特性** | 支持别名数组 `aliases text[]`，提高同义词召回率 |
 | **索引** | HNSW (向量) + GIN trigram (文本) |
 
-#### 2.2.4 `object_attribute_mapping` — 对象-属性关联表
+#### 2.2.4 `object_attribute_mapping` — 图关系的物化缓存
 
 | 项目 | 说明 |
 |------|------|
-| **用途** | 物化对象与属性的关联关系，加速反查和验证 |
+| **用途** | 物化 AGE 图中的对象-属性关联，作为图遍历的读优化缓存。AGE 图是权威来源 |
 | **主键** | `id` (bigserial) |
 | **唯一约束** | `(graph_name, object_vertex_id, attr_id)` |
 | **外键** | `attr_id → attribute_embeddings(id)` |
-| **特性** | `confidence` 字段支持概率化关联 |
+| **特性** | `link_object_attribute` 同时维护本表和 AGE 图边；`confidence` 支持概率化关联 |
 | **索引** | 按对象查询 + 按属性反查 |
 
 ### 2.3 检索函数（4 个公开函数）
@@ -89,7 +89,7 @@ OntoSQL 项目
 │                                                   │
 │ 输入：                                            │
 │   query_text          NL 查询文本                 │
-│   p_graph_name        图名 (default: 'default')   │
+│   p_graph_name        图名 (default: 'ontosql_graph')   │
 │   p_label             标签过滤 (NULL = 不限)      │
 │   p_top_k             返回数量 (default: 10)      │
 │   p_query_embedding   查询向量 (NULL = 仅trigram) │
@@ -158,7 +158,7 @@ OntoSQL 项目
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ 功能：联合检索（对象 + 属性 + 关联验证）           │
+│ 功能：语义召回 + AGE 图验证（按图索骥）          │
 │                                                   │
 │ 输入：                                            │
 │   query_text          NL 查询文本                 │
@@ -174,9 +174,11 @@ OntoSQL 项目
 │ 算法：                                            │
 │   1. search_objects()  ×2 扩容候选对象            │
 │   2. search_attributes() ×2 扩容候选属性          │
-│   3. CROSS JOIN 候选对象 × 候选属性               │
-│   4. EXISTS 检查 object_attribute_mapping         │
-│   5. 综合分 = 0.5×obj + 0.5×attr                  │
+│   3. AGE 图 Cypher 批量验证：                     │
+│      MATCH (obj:Object)-[r]->(prop)               │
+│      WHERE id(obj) IN [...] AND id(prop) IN [...] │
+│   4. 属性未建模为图顶点时，回退查 mapping 表      │
+│   5. CROSS JOIN + 综合分 = 0.5×obj + 0.5×attr     │
 │                                                   │
 │ 语言：plpgsql STABLE PARALLEL SAFE                  │
 │ 注意：CROSS JOIN 产生 O(N×M) 候选对               │
@@ -200,11 +202,12 @@ OntoSQL 项目
 #### 2.4.3 `link_object_attribute(p_graph_name, p_object_vertex_id, p_attr_id, p_relation_type, p_confidence)` → void
 
 - **语言**: PL/pgSQL
-- **行为**: INSERT ON CONFLICT DO UPDATE
+- **行为**: 同时写入 `object_attribute_mapping` 映射表 + AGE 图（若属性已建模为图顶点）
 - **校验**:
   1. 检查 `vertex_id` 在 `vertex_embeddings` 中存在
   2. 检查 `attr_id` 在 `attribute_embeddings` 中存在
   3. 校验失败抛出 EXCEPTION
+- **图同步**: 若属性有 `attr_vertex_id`，同步在 AGE 图中创建 `Object -[HAS_METRIC]-> Metric` 边
 
 ---
 

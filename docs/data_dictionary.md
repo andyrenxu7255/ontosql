@@ -139,9 +139,9 @@ Database: postgres
 
 ---
 
-### 2.4 `object_attribute_mapping` — 对象-属性关联表
+### 2.4 `object_attribute_mapping` — 图关系的物化缓存
 
-**用途**: 物化对象与属性的关联关系，加速反查（`find_objects_by_attribute`）和关联验证（`is_verified`）。
+**用途**: 物化 AGE 图中的对象-属性关联关系（Object -[:HAS_METRIC]-> Metric 等边），作为图遍历的读优化缓存。**AGE 图是权威来源**，`is_verified` 验证优先使用 Cypher 查图，仅当属性未建模为图顶点时回退查本表。`link_object_attribute()` 同时维护本表和 AGE 图。
 
 | 列名 | 类型 | 约束 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -150,7 +150,7 @@ Database: postgres
 | `object_vertex_id` | `bigint` | NOT NULL | — | 对象在 AGE 图中的 vertex_id |
 | `object_label` | `text` | NOT NULL | — | 对象标签类型 |
 | `attr_id` | `int` | NOT NULL, REFERENCES attribute_embeddings(id) | — | 属性 ID（外键） |
-| `relation_type` | `text` | NOT NULL | `'HAS_ATTRIBUTE'` | 关系类型 |
+| `relation_type` | `text` | NOT NULL | `'HAS_METRIC'` | 关系类型 |
 | `confidence` | `float` | NOT NULL | `1.0` | 关联置信度 [0, 1] |
 | `created_at` | `timestamptz` | NOT NULL | `now()` | 创建时间 |
 

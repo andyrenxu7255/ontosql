@@ -145,22 +145,24 @@ ontosql/
 用户 NL 输入: "张三上月销售额多少"
     │
     ├─→ ontosql.search_objects("张三上月销售额")
-    │      向量语义 + trigram 文本 → 候选: [张三, 钱七, ...]
+    │      向量语义 + trigram 文本 → 候选对象: [张三, 钱七, ...]
     │
     ├─→ ontosql.search_attributes("张三上月销售额")
-    │      向量语义 + trigram 文本 → 候选: [销售额, 客单价, ...]
+    │      向量语义 + trigram 文本 → 候选属性: [销售额, 客单价, ...]
     │
     └─→ ontosql.search_object_attribute("张三上月销售额")
            CROSS JOIN 候选对象 × 候选属性
-           └─ 查询 object_attribute_mapping 验证关联
-               ├─ 张三 + 销售额 → is_verified = true  ✅
-               ├─ 张三 + 客单价 → is_verified = false ❌
-               └─ 钱七 + 销售额 → is_verified = true  ✅
+           └─ AGE 图 Cypher 验证关联：
+               MATCH (obj:Object)-[:HAS_METRIC]->(m:Metric)
+               WHERE id(obj) IN [候选人] AND id(m) IN [候选属性]
+               ├─ 张三 + 销售额 → 图中有 HAS_METRIC 边 → is_verified = true  ✅
+               ├─ 张三 + 客单价 → 图中无对应边 → is_verified = false ❌
+               └─ 钱七 + 销售额 → 图中有 HAS_METRIC 边 → is_verified = true  ✅
                    │
-                   └─→ AGE Cypher:
-                       MATCH (张三)-[:HAS_METRIC]->(销售额)
-                             -[:HAS_DIMENSION]->(上月)
-                       RETURN value
+                   └─→ 图结构按图索骥：
+                       Object -[:HAS_METRIC]-> Metric -[:HAS_DIMENSION]-> Dimension
+                       张三 ─── HAS_METRIC ──→ 销售额 ── HAS_DIMENSION ──→ 上月
+                       → 精准定位属性字段，生成业务 SQL
 ```
 
 ---

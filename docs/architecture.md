@@ -87,7 +87,7 @@
 |------|------|------|
 | 向量与图分开存储 | 独立侧表 | AGE 的 agtype 将属性序列化为单列，无法建向量索引；分离后 pgvector 可对独立列建 HNSW 索引 |
 | 属性是否建模为图顶点 | 看场景 | Metric/Dimension 类属性建议建顶点（支持图验证），Entity 字段（如 age, phone）不需要 |
-| 关联物化表 | object_attribute_mapping | 避免每次 read Cypher MATCH 的开销（跨多次 JOIN），提升 is_verified 验证性能 |
+| 关联物化表 | object_attribute_mapping | 物化图关系的读缓存，加速属性列表和反查；**图是权威来源**，映射表通过 `link_object_attribute()` 与图同步维护 |
 | 多路召回权重 | 向量 0.6 + trigram 0.4 | 向量语义泛化能力强，trigram 补充精确字符匹配；可调参数 |
 | AGE 版本 | master（PG 18 API）→ 版本守卫 | master 功能最新但面向 PG 18，通过 `#if PG_VERSION_NUM` 条件编译兼容 PG 17 |
 
@@ -115,19 +115,23 @@
     │   ├─ search_attributes("张三上月..") │
     │   │     → [销售额(0.97), 客单价(0.57)]│
     │   │                                 │
-    │   └─ CROSS JOIN + 关联验证          │
+    │   └─ AGE 图 Cypher 批量验证:        │
+    │       MATCH (obj:Object)-[:HAS_METRIC]->(m:Metric) │
+    │       WHERE id(obj) IN [...] AND id(m) IN [...] │
     │         → (张三, 销售额, is_verified=true, score=0.96) │
     │         → (张三, 客单价, is_verified=false, score=0.76) │
     └────┬────────────────────────────────┘
          │  (仅保留 is_verified=true)
     ┌────▼────────────────────────────────┐
-    │ 图查询层 (AGE Cypher)               │
+    │ 图结构按图索骥 (AGE Cypher)         │
     │                                     │
-    │ MATCH (张三:{Object})              │
-    │   -[:HAS_METRIC]->(销售额:{Metric}) │
-    │   -[:HAS_DIMENSION]->(上月:{Dim})   │
+    │ Object -[:HAS_METRIC]-> Metric      │
+    │   -[:HAS_DIMENSION]-> Dimension     │
     │                                     │
-    │ → 拿到实际数据表/字段 → 生成 SQL    │
+    │ 张三 ─HAS_METRIC─→ 销售额            │
+    │        ─HAS_DIMENSION─→ 上月         │
+    │                                     │
+    │ → 精准定位属性字段 → 生成业务 SQL    │
     └────┬────────────────────────────────┘
          │
     ┌────▼────┐

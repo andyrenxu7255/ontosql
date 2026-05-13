@@ -13,10 +13,18 @@
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Step 1 — 联合检索（向量 + trigram + 图验证）               │
+│  Step 1 — 语义召回 + AGE 图验证                            │
 │                                                             │
 │  调用: search_object_attribute('张三上月销售额',             │
 │                                'ontosql_graph', 10, NULL)    │
+│                                                             │
+│  内部执行:                                                  │
+│  1. search_objects() → 候选对象: [张三, 钱七, ...]         │
+│  2. search_attributes() → 候选属性: [销售额, 客单价, ...]   │
+│  3. AGE 图 Cypher 批量验证:                                 │
+│     MATCH (obj:Object)-[:HAS_METRIC]->(m:Metric)            │
+│     WHERE id(obj) IN [...] AND id(m) IN [...]              │
+│  4. CROSS JOIN + 图验证 → is_verified                      │
 │                                                             │
 │  返回:                                                       │
 │  ┌──────────┬────────┬──────────┬─────────────┐             │
@@ -31,9 +39,9 @@
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Step 2 — 深度挖掘（列属性 + 图遍历）                       │
+│  Step 2 — 图结构按图索骥（属性列表 + 图遍历）              │
 │                                                             │
-│  2a. 列出对象属性字段:                                       │
+│  2a. 列出对象的全部属性字段:                                 │
 │  调用: get_object_attributes(张三.vertex_id,                 │
 │                              'ontosql_graph')                │
 │  返回:                                                      │
@@ -45,20 +53,26 @@
 │  │ 回款率 │ numeric  │HAS_METRIC │ 已回款占总应收款比例  │   │
 │  └────────┴──────────┴───────────┴──────────────────────┘   │
 │                                                             │
-│  2b. 图遍历找关联对象:                                      │
+│  2b. AGE 图遍历：按关系类型找关联对象/维度                  │
 │  调用: get_related_objects(张三.vertex_id,                   │
 │                            'ontosql_graph')                  │
 │  返回:                                                      │
 │  ┌──────────────┬────────┬──────────────┐                   │
 │  │ related_name │ label  │ relation     │                   │
 │  ├──────────────┼────────┼──────────────┤                   │
+│  │ 销售额       │ Metric │ HAS_METRIC   │ ← 拥有的指标     │
+│  │ 客户数       │ Metric │ HAS_METRIC   │                   │
+│  │ 回款率       │ Metric │ HAS_METRIC   │                   │
 │  │ 钱七         │ Object │ RELATED_TO   │ ← 同部门同事     │
 │  │ 销售部       │ Dept   │ BELONGS_TO   │ ← 所属部门       │
 │  └──────────────┴────────┴──────────────┘                   │
 │                                                             │
 │  Agent 动作：                                               │
-│  1. 对比 Step 1 的 "销售额" 和 Step 2a 的列表 → 确认匹配   │
-│  2. 根据维度词"上月" → 查维度表/时间函数                   │
+│  1. 对比 Step 1 的"销售额"和 Step 2a 的列表 → 确认匹配     │
+│  2. 通过图关系查"上月"维度：                                │
+│     MATCH (销售额:Metric)-[:HAS_DIMENSION]->(上月:Dimension)│
+│  3. 沿图路径 Object → HAS_METRIC → Metric → HAS_DIMENSION   │
+│     → Dimension 精准定位字段                                │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼

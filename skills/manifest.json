@@ -89,7 +89,7 @@
         "read_only": true,
         "input_schema": {
           "query_text": {"type": "string", "required": true, "max_length": 1000, "description": "Natural language query"},
-          "graph_name": {"type": "string", "default": "default", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"},
+          "graph_name": {"type": "string", "default": "ontosql_graph", "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"},
           "label": {"type": "string", "default": null, "description": "Optional vertex label filter"},
           "top_k": {"type": "integer", "default": 10, "min": 1, "max": 100},
           "query_embedding": {"type": "array", "default": null, "description": "1536-dim embedding vector (NULL = trigram only)"}
@@ -107,7 +107,7 @@
         "read_only": true,
         "input_schema": {
           "query_text": {"type": "string", "required": true, "max_length": 1000},
-          "graph_name": {"type": "string", "default": "default"},
+          "graph_name": {"type": "string", "default": "ontosql_graph"},
           "top_k": {"type": "integer", "default": 10, "min": 1, "max": 100},
           "query_embedding": {"type": "array", "default": null}
         },
@@ -124,7 +124,7 @@
         "read_only": true,
         "input_schema": {
           "attr_id": {"type": "integer", "required": true, "description": "Attribute ID from search-attributes result"},
-          "graph_name": {"type": "string", "default": "default"},
+          "graph_name": {"type": "string", "default": "ontosql_graph"},
           "top_k": {"type": "integer", "default": 20, "min": 1, "max": 200}
         },
         "output_schema": {"status": "success|error", "data": {"results": [{"object_vertex_id":0,"object_name":"","object_label":"","relation_type":""}]}},
@@ -140,7 +140,7 @@
         "read_only": true,
         "input_schema": {
           "query_text": {"type": "string", "required": true, "max_length": 1000},
-          "graph_name": {"type": "string", "default": "default"},
+          "graph_name": {"type": "string", "default": "ontosql_graph"},
           "top_k": {"type": "integer", "default": 10, "min": 1, "max": 50},
           "query_embedding": {"type": "array", "default": null}
         },
@@ -157,7 +157,7 @@
         "read_only": true,
         "input_schema": {
           "object_vertex_id": {"type": "integer", "required": true, "description": "Object vertex ID from AGE graph"},
-          "graph_name": {"type": "string", "default": "default"}
+          "graph_name": {"type": "string", "default": "ontosql_graph"}
         },
         "output_schema": {"status": "success|error", "data": {"results": [{"attr_id":0,"attr_name":"","data_type":"","description":"","relation_type":"","confidence":0.0}]}},
         "side_effects": [],

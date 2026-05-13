@@ -54,8 +54,9 @@ OntoSQL 领域模型
 │  ──────────────────────────       │  ──────────────────────  │
 │  ag_graph / ag_label              │  vertex_embeddings       │
 │  ag_vertex / ag_edge              │  attribute_embeddings    │
-│  图遍历 (openCypher)              │  object_attribute_mapping│
-│  关系验证 (is_verified)            │  语义搜索 (HNSW + trigram)│
+│  图遍历 + 关系验证 (Cypher)       │  语义搜索 (HNSW + trigram)│
+│  按图索骥精准定位 is_verified     │  object_attribute_mapping │
+│                                    │  (图关系物化缓存)          │
 └─────────────────────────────────────────────────────────────┘
                               │
                               │ 三大扩展引擎
@@ -136,7 +137,7 @@ OntoSQL 领域模型
 | **唯一约束** | `(graph_name, object_vertex_id, attr_id)` |
 | **外键** | `attr_id → attribute_embeddings(id)` |
 | **关键列** | `object_vertex_id`, `attr_id`, `relation_type`, `confidence float [0,1]` |
-| **被谁读取** | `find_objects_by_attribute` (反查), `search_object_attribute` (EXISTS验证 is_verified), `get_object_attributes` (JOIN), `link_object_attribute` (写入) |
+| **被谁读取** | `find_objects_by_attribute` (反查), `search_object_attribute` (属性无图顶点时回退验证), `get_object_attributes` (JOIN), `link_object_attribute` (写入) |
 | **索引** | B-tree(`graph_name, object_vertex_id`) + B-tree(`graph_name, attr_id`) |
 
 ### 2.2 索引实体 (7 个索引)
@@ -184,7 +185,7 @@ OntoSQL 领域模型
 | 属性 | 值 |
 |------|-----|
 | **定义位置** | [001_core_schema.sql:L221-L280](file:///Users/liuruiqi/ontosql/sql/001_core_schema.sql#L221-L280) |
-| **签名** | `search_objects(query_text text, p_graph_name text DEFAULT 'default', p_label text DEFAULT NULL, p_top_k int DEFAULT 10, p_query_embedding vector DEFAULT NULL) → TABLE(vertex_id bigint, vertex_name text, label_name text, vector_score float, trigram_score float, combined_score float)` |
+| **签名** | `search_objects(query_text text, p_graph_name text DEFAULT 'ontosql_graph', p_label text DEFAULT NULL, p_top_k int DEFAULT 10, p_query_embedding vector DEFAULT NULL) → TABLE(vertex_id bigint, vertex_name text, label_name text, vector_score float, trigram_score float, combined_score float)` |
 | **语言/易变性** | plpgsql / STABLE PARALLEL SAFE |
 | **算法** | 向量 HNSW ANN (×3 扩容) + trigram GIN (×3 扩容) → UNION ALL → GROUP BY MAX → 加权 0.6×向量+0.4×trigram → LIMIT |
 | **读取表** | T-02 |
@@ -195,7 +196,7 @@ OntoSQL 领域模型
 | 属性 | 值 |
 |------|-----|
 | **定义位置** | [001_core_schema.sql:L290-L368](file:///Users/liuruiqi/ontosql/sql/001_core_schema.sql#L290-L368) |
-| **签名** | `search_attributes(query_text text, p_graph_name text DEFAULT 'default', p_top_k int DEFAULT 10, p_query_embedding vector DEFAULT NULL) → TABLE(attr_name text, attr_id int, description text, vector_score float, trigram_score float, combined_score float)` |
+| **签名** | `search_attributes(query_text text, p_graph_name text DEFAULT 'ontosql_graph', p_top_k int DEFAULT 10, p_query_embedding vector DEFAULT NULL) → TABLE(attr_name text, attr_id int, description text, vector_score float, trigram_score float, combined_score float)` |
 | **语言/易变性** | plpgsql / STABLE PARALLEL SAFE |
 | **算法** | 同 F-03 双路召回 + alias 别名扩展召回 |
 | **读取表** | T-03 |
@@ -206,7 +207,7 @@ OntoSQL 领域模型
 | 属性 | 值 |
 |------|-----|
 | **定义位置** | [001_core_schema.sql:L379-L407](file:///Users/liuruiqi/ontosql/sql/001_core_schema.sql#L379-L407) |
-| **签名** | `find_objects_by_attribute(p_attr_id int, p_graph_name text DEFAULT 'default', p_top_k int DEFAULT 20) → TABLE(object_vertex_id bigint, object_name text, object_label text, relation_type text)` |
+| **签名** | `find_objects_by_attribute(p_attr_id int, p_graph_name text DEFAULT 'ontosql_graph', p_top_k int DEFAULT 20) → TABLE(object_vertex_id bigint, object_name text, object_label text, relation_type text)` |
 | **语言/易变性** | plpgsql / STABLE PARALLEL SAFE |
 | **算法** | T-04 LEFT JOIN T-02（补全名称） |
 | **读取表** | T-04, T-02 |
@@ -215,10 +216,10 @@ OntoSQL 领域模型
 | 属性 | 值 |
 |------|-----|
 | **定义位置** | [001_core_schema.sql:L424-L469](file:///Users/liuruiqi/ontosql/sql/001_core_schema.sql#L424-L469) |
-| **签名** | `search_object_attribute(query_text text, p_graph_name text DEFAULT 'default', p_top_k int DEFAULT 10, p_query_embedding vector DEFAULT NULL) → TABLE(object_vertex_id bigint, object_name text, object_label text, attr_name text, attr_id int, obj_score float, attr_score float, combined_score float, is_verified boolean)` |
+| **签名** | `search_object_attribute(query_text text, p_graph_name text DEFAULT 'ontosql_graph', p_top_k int DEFAULT 10, p_query_embedding vector DEFAULT NULL) → TABLE(object_vertex_id bigint, object_name text, object_label text, attr_name text, attr_id int, obj_score float, attr_score float, combined_score float, is_verified boolean)` |
 | **语言/易变性** | plpgsql / STABLE PARALLEL SAFE |
-| **算法** | F-03(×2扩容) + F-04(×2扩容) → CROSS JOIN 笛卡尔积 → EXISTS 查 T-04 验证 → 综合分 0.5×obj+0.5×attr |
-| **读取表** | T-04 (EXISTS 子查询) |
+| **算法** | F-03(×2扩容) + F-04(×2扩容) → CROSS JOIN 笛卡尔积 → AGE 图 Cypher 批量验证 → 综合分 0.5×obj+0.5×attr |
+| **读取表** | G-01 (AGE 图 Cypher 查询), T-04 (回退：属性无图顶点时) |
 | **调用函数** | F-00, F-01, F-02, F-03, F-04 |
 | **被调用者** | 外部 Agent（三步工作流 Step 1） |
 
@@ -226,7 +227,7 @@ OntoSQL 领域模型
 | 属性 | 值 |
 |------|-----|
 | **定义位置** | [001_core_schema.sql:L480-L509](file:///Users/liuruiqi/ontosql/sql/001_core_schema.sql#L480-L509) |
-| **签名** | `get_object_attributes(p_object_vertex_id bigint, p_graph_name text DEFAULT 'default') → TABLE(attr_id int, attr_name text, data_type text, description text, relation_type text, confidence float)` |
+| **签名** | `get_object_attributes(p_object_vertex_id bigint, p_graph_name text DEFAULT 'ontosql_graph') → TABLE(attr_id int, attr_name text, data_type text, description text, relation_type text, confidence float)` |
 | **语言/易变性** | plpgsql / STABLE PARALLEL SAFE |
 | **算法** | T-04 JOIN T-03，按 confidence DESC |
 | **被调用者** | 外部 Agent（三步工作流 Step 2a） |
@@ -263,10 +264,10 @@ OntoSQL 领域模型
 | 属性 | 值 |
 |------|-----|
 | **定义位置** | [001_core_schema.sql:L683-L726](file:///Users/liuruiqi/ontosql/sql/001_core_schema.sql#L683-L726) |
-| **签名** | `link_object_attribute(p_graph_name text, p_object_vertex_id bigint, p_attr_id int, p_relation_type text DEFAULT 'HAS_ATTRIBUTE', p_confidence float DEFAULT 1.0) → void` |
+| **签名** | `link_object_attribute(p_graph_name text, p_object_vertex_id bigint, p_attr_id int, p_relation_type text DEFAULT 'HAS_METRIC', p_confidence float DEFAULT 1.0) → void` |
 | **语言/易变性** | plpgsql / VOLATILE |
-| **双重校验** | ① vertex_id 在 T-02 中存在 ② attr_id 在 T-03 中存在且同图 |
-| **写入** | T-04 (ON CONFLICT UPSERT) |
+| **双重校验** | ① vertex_id 在 T-02 中存在 ② attr_id 在 T-03 中存在且同图 ③ p_relation_type 白名单校验 |
+| **写入** | T-04 (ON CONFLICT UPSERT) + G-01 (AGE 图 MERGE 创建边，属性有图顶点时) |
 
 ### 2.4 图模型实体 (1 图 + 4 顶点标签 + 4 边标签)
 
@@ -410,13 +411,15 @@ F-03 search_objects ───── READ ────▶ T-02 vertex_embeddings
 F-04 search_attributes ── READ ────▶ T-03 attribute_embeddings
 F-05 find_objects_by_attr ─ READ ──▶ T-04 object_attribute_mapping
                        ── READ ────▶ T-02 (LEFT JOIN)
-F-06 search_obj_attr ──── READ ────▶ T-04 (EXISTS 验证)
+F-06 search_obj_attr ──── READ ────▶ AGE 图 G-01 (Cypher 批量验证)
+                   ──── READ ────▶ T-04 (回退：属性无图顶点时)
 F-07 get_object_attrs ── READ ────▶ T-04 JOIN T-03
 F-08 get_related_objs ─── READ ────▶ AGE 图 (Cypher)
 F-09 upsert_vertex ───── WRITE ───▶ T-02 (UPSERT)
 F-10 upsert_attribute ── WRITE ───▶ T-03 (UPSERT)
 F-11 link_obj_attr ───── VALIDATE ─▶ T-02, T-03 (存在性检查)
                    ───── WRITE ───▶ T-04 (UPSERT)
+                   ───── WRITE ───▶ AGE 图 G-01 (创建 HAS_METRIC 等边)
 ```
 
 ### 3.4 外键依赖链
@@ -480,7 +483,10 @@ Docker 构建与编排层级:
 │ Step 1: F-06 search_object_attribute()                    │
 │   ├── F-03 search_objects()   ⇢ T-02 (HNSW + trigram)    │
 │   ├── F-04 search_attributes() ⇢ T-03 (HNSW + trigram)   │
-│   └── EXISTS ⇢ T-04 (is_verified 验证)                    │
+│   └── AGE 图 Cypher 批量验证 ⇢ G-01 图                   │
+│       MATCH (obj:Object)-[r]->(prop)                      │
+│       WHERE id(obj) IN [...] AND id(prop) IN [...]        │
+│       → is_verified = true/false                          │
 │   输出: (张三, 销售额, score=0.96, is_verified=true)      │
 └──────────────────────────┬────────────────────────────────┘
                            │
@@ -614,7 +620,7 @@ Level 2 (全部 ~86 个对象) — 需要修改/扩展系统时:
 | F-08 | 外部 Agent | F-01, cypher() | AGE 图 |
 | F-09 | 外部 Agent | F-01 | T-02 (WRITE) |
 | F-10 | 外部 Agent | F-01 | T-03 (WRITE) |
-| F-11 | 外部 Agent | F-01 | T-04 (WRITE), T-02, T-03 (VALIDATE) |
+| F-11 | 外部 Agent | F-01 | T-04 (WRITE), T-02, T-03 (VALIDATE), AGE 图 (WRITE 创建边) |
 
 ### 5.4 关键设计决策速查
 
@@ -623,9 +629,9 @@ Level 2 (全部 ~86 个对象) — 需要修改/扩展系统时:
 | 向量与图分开存储 | 独立侧表 T-02/T-03 + AGE 图 | T-02, T-03, G-01 |
 | 关联物化表 | T-04 避免每次 Cypher MATCH | T-04, F-05, F-06, F-07 |
 | 多路召回权重 | 向量 0.6 + trigram 0.4 | F-03, F-04 |
-| 联合检索 CROSS JOIN | 笛卡尔积 + EXISTS 验证 | F-06 |
+| 联合检索 + 图验证 | CROSS JOIN + AGE Cypher 批量验证 | F-06 |
 | 扩容因子 ×3 | candidate_pool = top_k × 3 | F-03, F-04 |
-| 属性别名支持 | `aliases text[]` 提高同义词召回率 | T-03, F-04 |
+| 图关系权威来源 | AGE 图是 is_verified 的权威来源；映射表为缓存 | F-06, F-11 |
 | COALESCE 保留旧值 | upsert 时 description 非覆盖 | F-09, F-10 |
 | AGE 版本守卫 | `#if PG_VERSION_NUM` 兼容 PG 17 | M-05 |
 

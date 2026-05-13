@@ -80,7 +80,7 @@ When used via `docker-compose`, these variables override:
 
 ```bash
 # Form A: inline JSON input (highest priority)
-./ontosql search-objects --input '{"query_text":"sales","graph_name":"default"}'
+./ontosql search-objects --input '{"query_text":"sales","graph_name":"ontosql_graph"}'
 
 # Form B: file input
 ./ontosql upsert-vertex --file /path/to/vertex_input.json

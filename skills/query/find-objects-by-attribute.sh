@@ -7,7 +7,7 @@ require_pg
 START_MS=$(python3 -c 'import time; print(int(time.time()*1000))')
 
 attr_id=$(json_get "attr_id" "")
-graph_name=$(json_get "graph_name" "default")
+graph_name=$(json_get "graph_name" "ontosql_graph")
 top_k=$(json_get "top_k" "20")
 
 if [[ -z "${attr_id}" || "${attr_id}" == "null" ]]; then

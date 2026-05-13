@@ -10,7 +10,7 @@ ALL Skills accept input in exactly these three forms:
 
 ```bash
 # Form A: --input flag (highest priority)
-./ontosql search-objects --input '{"query_text":"sales","graph_name":"default"}'
+./ontosql search-objects --input '{"query_text":"sales","graph_name":"ontosql_graph"}'
 
 # Form B: --file flag
 ./ontosql search-object-attribute --file /path/to/input.json

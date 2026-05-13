@@ -23,7 +23,7 @@ Embeddings arrive as JSON arrays in the `--input` field:
 {
   "embedding": [0.0123, -0.0456, 0.0789, ..., -0.0012],
   "vertex_id": 42,
-  "graph_name": "default",
+  "graph_name": "ontosql_graph",
   "vertex_name": "SalesReport",
   "label_name": "Object"
 }

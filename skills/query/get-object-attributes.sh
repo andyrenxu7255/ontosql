@@ -7,7 +7,7 @@ require_pg
 START_MS=$(python3 -c 'import time; print(int(time.time()*1000))')
 
 object_vertex_id=$(json_get "object_vertex_id" "")
-graph_name=$(json_get "graph_name" "default")
+graph_name=$(json_get "graph_name" "ontosql_graph")
 
 if [[ -z "${object_vertex_id}" || "${object_vertex_id}" == "null" ]]; then
     die_client "ERR_INPUT_EMPTY" "object_vertex_id is required"
